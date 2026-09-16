@@ -13,7 +13,7 @@ name = "Ahmed Mohamed"
 photo = "ahmed.jpg"
 bio = "Friendly and active student. Loves football and reading."
 allergies = "Peanuts"
-parent_1 = "+252 63 1234567"
+parent_1 = "+252 63 4403028"
 parent_2 = "+252 63 7654321"
 
 
