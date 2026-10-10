@@ -37,15 +37,12 @@ else:
     st.success("No known allergies")
 
 
-st.subheader("📞 Parent / Guardian Contacts")
-
-st.write(f"Parent 1: {parent_1}")
-st.write(f"Parent 2: {parent_2}")
+# st.subheader("📞 Parent / Guardian Contacts")
 
 
 st.divider()
 
-st.caption("School Safety NFC Demo")
+
 
 
 # Remove spaces from numbers so phone carrier networks read them correctly
