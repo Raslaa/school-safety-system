@@ -15,7 +15,7 @@ bio = "Friendly and active student. Loves football and reading."
 allergies = "Peanuts"
 
 parent_1 = "+252 63 4403028"
-parent_2= "+252 63 7654321"
+parent_2 = "+252 63 7654321"
 
 
 # -----------------------------
