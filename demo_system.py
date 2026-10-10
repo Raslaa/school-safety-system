@@ -13,6 +13,7 @@ name = "Ahmed Mohamed"
 photo = "ahmed.jpg"
 bio = "Friendly and active student. Loves football and reading."
 allergies = "Peanuts"
+
 parent_1 = "+252 63 4403028"
 parent_2= "+252 63 7654321"
 
@@ -37,12 +38,12 @@ else:
     st.success("No known allergies")
 
 
-# st.subheader("📞 Parent / Guardian Contacts")
+ st.subheader("📞 Parent / Guardian Contacts")
 
 
 st.divider()
 
-
+📞 Parent / Guardian Contacts
 
 
 # Remove spaces from numbers so phone carrier networks read them correctly
