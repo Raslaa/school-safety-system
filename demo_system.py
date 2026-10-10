@@ -38,12 +38,10 @@ else:
     st.success("No known allergies")
 
 
- st.subheader("📞 Parent / Guardian Contacts")
-
-
 st.divider()
 
-📞 Parent / Guardian Contacts
+# Heading above the call buttons
+st.subheader("📞 Parent / Guardian Contacts")
 
 
 # Remove spaces from numbers so phone carrier networks read them correctly
