@@ -13,29 +13,27 @@ supabase = init_supabase()
 # =============================================================
 # FIXED AUTOMATIC GATEKEEPER ROUTING (FORCED INITIALIZATION)
 # =============================================================
-# Initialize session routing state to prevent cache lockouts
 if "route_checked" not in st.session_state:
     st.session_state.route_checked = False
 
 # Fetch parameter directly from browser link string
 tag_token = st.query_params.get("tag_token", None)
 
-# FIX: If a token exists but Streamlit missed it on initial load, force an instant sync rerun
+# If a token exists but Streamlit missed it on initial load, force an instant sync rerun
 if tag_token and not st.session_state.route_checked:
     st.session_state.route_checked = True
     st.rerun()
 
 # -------------------------------------------------------------
-# DDYNAMIC FORCED DISPATCH IF TOKEN IS PRESENT
+# DYNAMIC FORCED DISPATCH IF TOKEN IS PRESENT
 # -------------------------------------------------------------
 if tag_token:
-    # A tag was scanned! Completely lock out the admin menu and load profile fullscreen
     try:
         tag_res = supabase.table("nfc_tags").select("student_id, status").eq("public_token", tag_token).execute()
-        if not tag_res.data or tag_res.data["status"] != "active":
+        if not tag_res.data or tag_res.data[0]["status"] != "active":
             st.error("🚨 Access Refused: This NFC tag is inactive or has been reported lost.")
             st.stop()
-        student_uuid = tag_res.data["student_id"]
+        student_uuid = tag_res.data[0]["student_id"]
     except Exception as e:
         st.error("Connection error while validating security token infrastructure.")
         st.stop()
@@ -47,7 +45,7 @@ if tag_token:
         st.error("🚨 System Profile Error: Enrolled child credentials not found.")
         st.stop()
 
-    child = child_res.data
+    child = child_res.data[0]
     guardians = guardian_res.data
 
     st.title("🛡️ Student Safety Profile")
@@ -77,19 +75,18 @@ if tag_token:
 # BACKUP DEMO FALLBACK (IF NO TOKEN IS PRESENT)
 # -------------------------------------------------------------
 else:
-    # Reset tracking variable if user explicitly clears the link parameters
     st.session_state.route_checked = False
-    
     st.sidebar.title("🛡️ Proximind Safety Hub")
     app_mode = st.sidebar.radio("Navigation Menu:", ["🚀 Admin Dashboard (Demo)", "ℹ️ System Info"])
 
     if app_mode == "🚀 Admin Dashboard (Demo)":
         st.title("🔑 Administrative Control Panel (DEMO MODE)")
         st.success("🔓 Security authentication disabled for demonstration presentation purposes.")
+        
         admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags"])
 
         # 1. Directory View
-        with admin_tabs:
+        with admin_tabs[0]:
             st.subheader("Student Database Manifest")
             try:
                 students_res = supabase.table("students").select("*").execute().data
@@ -101,7 +98,7 @@ else:
                 st.error(f"Database read failure: {str(e)}")
 
         # 2. Registration Intake Form
-        with admin_tabs:
+        with admin_tabs[1]:
             st.subheader("Enroll New Student Identity")
             with st.form("new_student_form", clear_on_submit=True):
                 s_id = st.text_input("School Registration ID (e.g. AUS-2026-001):")
@@ -128,7 +125,7 @@ else:
                                 "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
                             }
                             inserted_student = supabase.table("students").insert(student_payload).execute()
-                            new_student_uuid = inserted_student.data["id"]
+                            new_student_uuid = inserted_student.data[0]["id"]
                             
                             guardian_payload = {
                                 "student_id": new_student_uuid, "full_name": g_name,
@@ -140,7 +137,7 @@ else:
                             st.error(f"Failed to submit: {str(e)}")
 
         # 3. Assign Tags
-        with admin_tabs:
+        with admin_tabs[2]:
             st.subheader("Configure Physical NFC Tokens")
             try:
                 students_list = supabase.table("students").select("id, full_name, student_id").execute().data
@@ -151,7 +148,7 @@ else:
                     
                     if st.button("GENERATE NEW SECURE NFC TOKEN"):
                         tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
-                        hex_token = tag_res.data["public_token"]
+                        hex_token = tag_res.data[0]["public_token"]
                         st.success("🔒 Secure Security Hex Key Generated Successfully!")
                         st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
                         st.code(f"https://streamlit.app{hex_token}")
