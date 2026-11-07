@@ -4,13 +4,35 @@ import streamlit as st
 from supabase import create_client, Client
 
 # Initialize Database securely from secrets.toml
+# Initialize Database securely from secrets.toml with direct visual debugging
 @st.cache_resource
 def init_supabase() -> Client:
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["key"]
-    return create_client(url, key)
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        
+        # Guard check against bad homepage URLs
+        if "supabase.co" in url and len(url) < 30:
+            st.error(f"⚠️ Configuration Error: Your URL looks too short ({url}). It must contain your exact 20-character reference ID.")
+            st.info("💡 Open your Supabase Dashboard ➔ Project Settings (Gear) ➔ API. Copy the full link from the URL block field and update your secrets box.")
+            st.stop()
+            
+        return create_client(url, key)
+    except KeyError:
+        st.error("🔒 Secrets Missing: Please populate your [supabase] variables inside the cloud settings panel.")
+        st.stop()
+    except Exception as e:
+        # If it returns HTML, catch it and show helpful visual guidance
+        st.error("🚨 Network Connection Refused: The app received an HTML error webpage instead of database data.")
+        st.info("This means the URL inside your secrets panel is incorrect or pointing to a paused project database cluster.")
+        st.write("---")
+        st.write("### 🛠️ Double-Check your Secrets values right now:")
+        st.write(f"Current Configured URL: `{st.secrets['supabase'].get('url', 'NOT SET')}`")
+        st.write(f"Current Configured Key Length: `{len(st.secrets['supabase'].get('key', ''))} characters`")
+        st.stop()
 
 supabase = init_supabase()
+
 
 st.sidebar.title("🛡️ Proximind Safety Hub")
 app_mode = st.sidebar.radio("Navigation Menu:", ["NFC Tag Scanner Gateway", "Admin Portal Management"])
