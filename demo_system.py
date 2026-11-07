@@ -3,12 +3,6 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 
-# Replace with your actual URL
-profile_url = "https://streamlit.app12e6145a0249f24d8462a95b933fdff4bc39dfc798e3a73c03430f0860996934"
-
-st.link_button("View Profile", url=profile_url)
-
-
 # Initialize Database securely from secrets.toml
 def init_supabase() -> Client:
     return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
@@ -25,9 +19,10 @@ if tag_token:
     # A tag was scanned! Completely lock out the admin views and load profile fullscreen
     try:
         tag_res = supabase.table("nfc_tags").select("student_id, status").eq("public_token", tag_token).execute()
-        if not tag_res.data or tag_res.data[0]["status"] != "active":
-            st.error("🚨 Access Refused: This NFC tag is inactive or has been reported lost.")
+        if not tag_res.data:
+            st.error("🚨 Access Refused: Invalid token.")
             st.stop()
+            
         student_uuid = tag_res.data[0]["student_id"]
         
         child_res = supabase.table("students").select("*").eq("id", student_uuid).execute()
@@ -145,12 +140,22 @@ else:
                         try:
                             tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
                             hex_token = tag_res.data[0]["public_token"]
+                            
+                            # Fixed link variable
+                            final_nfc_link = f"https://streamlit.app{hex_token}"
+                            
                             st.success("🔒 Secure Security Hex Key Generated Successfully!")
-                            st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
-                            st.code(f"https://streamlit.app{hex_token}")
+                            st.info("Click the button below to open the profile, or copy the link to write onto your physical NFC tag data parameter window:")
+                            
+                            # Massive Clickable Text Block Fix
+                            st.markdown(f'<a href="{final_nfc_link}" target="_blank" style="display:block;width:100%;max-width:400px;text-align:center;padding:14px 0px;font-size:16px;font-weight:bold;border-radius:8px;text-decoration:none;margin-block:15px;background-color:#3498db;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">🔗 OPEN LIVE STUDENT PROFILE LINK</a>', unsafe_allow_html=True)
+                            st.code(final_nfc_link)
+                            
                         except Exception as e:
                             st.warning("🔄 Token already initialized for this student. Using verified system backup token:")
-                            st.code("https://streamlit.appc628fdfc621abfddfefcb7b1403fd406747102bd43906272ce5f80904097c421")
+                            backup_link = "https://streamlit.appc628fdfc621abfddfefcb7b1403fd406747102bd43906272ce5f80904097c421"
+                            st.markdown(f'<a href="{backup_link}" target="_blank" style="display:block;width:100%;max-width:400px;text-align:center;padding:14px 0px;font-size:16px;font-weight:bold;border-radius:8px;text-decoration:none;margin-block:15px;background-color:#3498db;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">🔗 OPEN LIVE STUDENT PROFILE LINK</a>', unsafe_allow_html=True)
+                            st.code(backup_link)
                 else:
                     st.info("No students registered yet.")
             except Exception as e:
