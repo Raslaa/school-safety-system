@@ -1,4 +1,5 @@
-import os
+
+    import os
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
@@ -16,17 +17,24 @@ tag_token = st.query_params.get("tag_token", None)
 # PRODUCTION DEMO ROUTING GATEKEEPER (BYPASSING CACHE TRAPS)
 # =============================================================
 if tag_token:
-    # A tag was scanned! Bypass the rigid nfc_tags lookup table restriction for the live showcase demo
     try:
+        # Search for the tag token directly in the nfc_tags table
+        tag_res = supabase.table("nfc_tags").select("student_id, status").eq("public_token", tag_token).execute()
+        
+        if not tag_res.data:
+            st.error("🚨 Access Refused: Invalid token code.")
+            st.stop()
+            
+        student_uuid = tag_res.data[0]["student_id"]
+        
         # Pull the matching student record directly from the students manifest table
-        child_res = supabase.table("students").select("*").execute()
+        child_res = supabase.table("students").select("*").eq("id", student_uuid).execute()
+        
         if not child_res.data:
             st.error("🚨 System Profile Error: Enrolled child credentials not found.")
             st.stop()
         
-        # Pick the student record profile context safely
         child = child_res.data[0]
-        student_uuid = child["id"]
         
         # Pull corresponding guardian contact channels relational rows
         guardian_res = supabase.table("guardians").select("*").eq("student_id", student_uuid).execute()
@@ -145,14 +153,22 @@ else:
                             st.code(final_nfc_link)
                             
                         except Exception as e:
-                            st.warning("🔄 Token already initialized for this student. Using verified system backup token:")
-                            st.code("https://streamlit.appc628fdfc621abfddfefcb7b1403fd406747102bd43906272ce5f80904097c421")
+                            # FIXED BACKUP BLOCK: If token already exists, fetch the existing one cleanly!
+                            existing_tag = supabase.table("nfc_tags").select("public_token").eq("student_id", selected_uuid).execute()
+                            if existing_tag.data:
+                                hex_token = existing_tag.data[0]["public_token"]
+                                fixed_link = f"https://streamlit.app{hex_token}"
+                                st.warning("🔄 Token already initialized for this student. Fetched valid link from cloud:")
+                                st.code(fixed_link)
+                            else:
+                                st.error("Could not generate or retrieve token mapping row.")
                 else:
                     st.info("No students registered yet.")
             except Exception as e:
                 st.error(f"Failed to query records: {str(e)}")
 
-    elif app_mode == "ℹ️ System Info":
-        st.title("🛡️ Proximind Safety Systems")
-        st.info("NFC Tag gateway active. Access control panel via sidebar controls.")
+elif app_mode == "ℹ️ System Info":
+    st.title("🛡️ Proximind Safety Systems")
+    st.info("NFC Tag gateway active. Access control panel via sidebar controls.")
+
 
