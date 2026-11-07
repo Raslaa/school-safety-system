@@ -129,6 +129,7 @@ elif app_mode == "🚀 Admin Dashboard (Demo)":
                     st.success("🔒 Secure Security Hex Key Generated Successfully!")
                     st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
                     st.code(f"https://streamlit.app{hex_token}")
+
             else:
                 st.info("No students registered yet.")
         except Exception as e:
