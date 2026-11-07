@@ -3,6 +3,12 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 
+# Replace with your actual URL
+profile_url = "https://streamlit.app12e6145a0249f24d8462a95b933fdff4bc39dfc798e3a73c03430f0860996934"
+
+st.link_button("View Profile", url=profile_url)
+
+
 # Initialize Database securely from secrets.toml
 def init_supabase() -> Client:
     return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
