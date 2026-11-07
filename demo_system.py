@@ -5,8 +5,10 @@ from supabase import create_client, Client
 
 # Initialize Database securely from secrets.toml
 @st.cache_resource
+# REMOVED the cache decorator to force a live connection test
 def init_supabase() -> Client:
     return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+
 
 supabase = init_supabase()
 st.sidebar.title("🛡️ Proximind Safety Hub")
