@@ -1,3 +1,4 @@
+
 import os
 import pandas as pd
 import streamlit as st
@@ -141,21 +142,15 @@ else:
                             tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
                             hex_token = tag_res.data[0]["public_token"]
                             
-                            # Fixed link variable
+                            # Fixed link structure cleanly rendered inside code box
                             final_nfc_link = f"https://streamlit.app{hex_token}"
-                            
                             st.success("🔒 Secure Security Hex Key Generated Successfully!")
-                            st.info("Click the button below to open the profile, or copy the link to write onto your physical NFC tag data parameter window:")
-                            
-                            # Massive Clickable Text Block Fix
-                            st.markdown(f'<a href="{final_nfc_link}" target="_blank" style="display:block;width:100%;max-width:400px;text-align:center;padding:14px 0px;font-size:16px;font-weight:bold;border-radius:8px;text-decoration:none;margin-block:15px;background-color:#3498db;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">🔗 OPEN LIVE STUDENT PROFILE LINK</a>', unsafe_allow_html=True)
+                            st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
                             st.code(final_nfc_link)
                             
                         except Exception as e:
                             st.warning("🔄 Token already initialized for this student. Using verified system backup token:")
-                            backup_link = "https://streamlit.appc628fdfc621abfddfefcb7b1403fd406747102bd43906272ce5f80904097c421"
-                            st.markdown(f'<a href="{backup_link}" target="_blank" style="display:block;width:100%;max-width:400px;text-align:center;padding:14px 0px;font-size:16px;font-weight:bold;border-radius:8px;text-decoration:none;margin-block:15px;background-color:#3498db;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">🔗 OPEN LIVE STUDENT PROFILE LINK</a>', unsafe_allow_html=True)
-                            st.code(backup_link)
+                            st.code("https://streamlit.appc628fdfc621abfddfefcb7b1403fd406747102bd43906272ce5f80904097c421")
                 else:
                     st.info("No students registered yet.")
             except Exception as e:
@@ -164,5 +159,6 @@ else:
     elif app_mode == "ℹ️ System Info":
         st.title("🛡️ Proximind Safety Systems")
         st.info("NFC Tag gateway active. Access control panel via sidebar controls.")
+
 
 
