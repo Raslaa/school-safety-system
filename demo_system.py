@@ -9,7 +9,7 @@ from supabase import create_client, Client
 def init_supabase() -> Client:
     try:
         url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
+        key = st.secrets["supabase"]["sb_publishable_ClWM1bilFm8RRJe13rEr6Q_8DofoN7U"]
         
         # Guard check against bad homepage URLs
         if "supabase.co" in url and len(url) < 30:
