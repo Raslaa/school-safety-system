@@ -1,5 +1,6 @@
-import streamlit as st
+import os
 import pandas as pd
+import streamlit as st
 from supabase import create_client, Client
 
 # Initialize Database securely from secrets.toml
@@ -92,22 +93,28 @@ elif app_mode == "Admin Portal Management":
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
 
+    # IF NOT LOGGED IN, SHOW LOGIN FORM
     if not st.session_state.logged_in:
         email = st.text_input("Admin Email Address:")
-        password = st.text_input("Security Access Code:", type="password")
+        password = st.text_input("Password / Security Access Code:", type="password")
         
         if st.button("AUTHENTICATE SESSION", use_container_width=True):
             try:
-                # Login directly using Supabase Native Auth
+                # This signs in directly via Supabase Auth using your created user credentials
                 auth_res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                st.session_state.logged_in = True
-                st.success("Session verified! Accessing secure system data modules...")
-                st.rerun()
+                
+                # Double check that the login returned a valid session token
+                if auth_res.session:
+                    st.session_state.logged_in = True
+                    st.success("Session verified! Accessing secure system data modules...")
+                    st.rerun()
+                else:
+                    st.error("Authentication rejected: User token could not be verified.")
             except Exception as e:
-                st.error("Authentication rejected: Ensure your user account is in the public.admin_users table.")
+                st.error("Authentication rejected: Check your email/password or confirm your UID is in the admin_users table.")
         st.stop()
 
-    # User Authenticated - Display Dashboard Panel Controls
+    # USER IS AUTHENTICATED - DISPLAY DASHBOARD PANEL CONTROLS
     st.sidebar.success("Proximind Secure Session")
     if st.sidebar.button("Terminate Access Session (Logout)"):
         st.session_state.logged_in = False
@@ -125,7 +132,7 @@ elif app_mode == "Admin Portal Management":
                 st.dataframe(df_students, use_container_width=True)
             else:
                 st.info("No active student items found.")
-        except:
+        except Exception as e:
             st.error("Authorization Block: Ensure your authenticated profile UUID is inside the 'admin_users' table.")
 
     # 2. Complete Registration Intake Form
@@ -146,25 +153,28 @@ elif app_mode == "Admin Portal Management":
             g_rel = st.text_input("Relationship to Child (e.g. Father, Mother):")
             g_phone = st.text_input("Active Phone Line Number (Include Country Code):")
             
-            if st.form_submit_value("COMMIT RECORD TRANSACTION TO CLOUD"):
+            if st.form_submit_button("COMMIT RECORD TRANSACTION TO CLOUD"):
                 if not s_id or not s_name or not g_phone:
                     st.error("Mandatory form entry constraints triggered. ID, Name, and Phone cannot be blank.")
                 else:
-                    # 1. Write the Student Row
-                    student_payload = {
-                        "student_id": s_id, "full_name": s_name, "photo_url": s_photo,
-                        "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
-                    }
-                    student_db_res = supabase.table("students").insert(student_payload).execute()
-                    new_student_uuid = student_db_res.data[0]["id"]
-                    
-                    # 2. Write the Bound Guardian Row linked to the UUID
-                    guardian_payload = {
-                        "student_id": new_student_uuid, "full_name": g_name,
-                        "relationship": g_rel, "phone": g_phone, "is_primary": True
-                    }
-                    supabase.table("guardians").insert(guardian_payload).execute()
-                    st.success(f"Success! Registered **{s_name}** along with primary guardian lines.")
+                    try:
+                        # 1. Write the Student Row
+                        student_payload = {
+                            "student_id": s_id, "full_name": s_name, "photo_url": s_photo,
+                            "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
+                        }
+                        student_db_res = supabase.table("students").insert(student_payload).execute()
+                        new_student_uuid = student_db_res.data[0]["id"]
+                        
+                        # 2. Write the Bound Guardian Row linked to the UUID
+                        guardian_payload = {
+                            "student_id": new_student_uuid, "full_name": g_name,
+                            "relationship": g_rel, "phone": g_phone, "is_primary": True
+                        }
+                        supabase.table("guardians").insert(guardian_payload).execute()
+                        st.success(f"Success! Registered **{s_name}** along with primary guardian lines.")
+                    except Exception as e:
+                        st.error(f"Failed to submit: {str(e)}")
 
     # 3. Assign & Retrieve Token Keys for Physical NFC writing
     with admin_tabs[2]:
@@ -177,7 +187,6 @@ elif app_mode == "Admin Portal Management":
                 selected_uuid = student_options[selected_child_name]
                 
                 if st.button("GENERATE NEW SECURE NFC TOKEN"):
-                    # This insert automatically calls the gen_random_bytes(32) 'hex' default function you coded!
                     tag_write_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
                     hex_token = tag_write_res.data[0]["public_token"]
                     
@@ -186,5 +195,5 @@ elif app_mode == "Admin Portal Management":
                     st.code(f"https://streamlit.app{hex_token}")
             else:
                 st.info("No students registered yet.")
-        except:
+        except Exception as e:
             st.error("Failed to query records. Verify authentication rules.")
