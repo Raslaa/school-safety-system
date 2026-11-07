@@ -5,14 +5,38 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 
+st.set_page_config(page_title="Student Safety Profile", page_icon="🛡️", layout="centered")
+
 
 def init_supabase() -> Client:
-    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+    # Streamlit Community Cloud can use secrets.toml; Render uses environment variables.
+    try:
+        supabase_settings = st.secrets.get("supabase", {})
+    except Exception:
+        supabase_settings = {}
+    supabase_url = supabase_settings.get("url") or os.getenv("SUPABASE_URL")
+    supabase_key = supabase_settings.get("key") or os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise RuntimeError(
+            "Set SUPABASE_URL and SUPABASE_KEY in the hosting provider's environment settings."
+        )
+    return create_client(supabase_url, supabase_key)
 
 
 def build_profile_url(token: str) -> str:
-    """Build a full URL to this deployed app's student profile route."""
-    base_url = st.secrets.get("public_app_url") or os.getenv("PUBLIC_APP_URL")
+    """Build the profile link from the app address currently open in the browser."""
+    # Use this running app's own address first. This prevents a stale URL setting
+    # from sending NFC links to a different Streamlit app.
+    try:
+        base_url = st.context.url
+    except Exception:
+        base_url = None
+    if not base_url:
+        try:
+            base_url = st.secrets.get("public_app_url")
+        except Exception:
+            base_url = None
+    base_url = base_url or os.getenv("PUBLIC_APP_URL")
     if not base_url:
         raise ValueError(
             "Set public_app_url in .streamlit/secrets.toml or the PUBLIC_APP_URL "
@@ -58,38 +82,35 @@ if tag_token:
         st.stop()
 
     st.title("🛡️ Student Safety Profile")
-    photo_url = child.get("photo_url")
-    if photo_url and photo_url.strip():
-        st.image(photo_url, width=200)
-    st.header(child.get("full_name", "Student"))
-    st.caption(f"Class/Level: {child.get('class_name') or 'Not specified'}")
-    st.write(child.get("bio") or "")
+    st.caption("Emergency information for this student")
+    with st.container(border=True):
+        photo_url = child.get("photo_url")
+        if isinstance(photo_url, str) and photo_url.strip():
+            st.image(photo_url, width=200)
+        st.header(child.get("full_name") or "Student")
+        st.caption(f"Class / Grade: {child.get('class_name') or 'Not specified'}")
+        bio = child.get("bio")
+        if bio:
+            st.write(bio)
 
     allergies = child.get("allergies")
-    if allergies and allergies.strip().lower() != "none":
+    if allergies and str(allergies).strip().lower() not in {"none", "n/a", "na"}:
         st.warning(f"⚠️ Known allergies: {allergies}")
-    if child.get("safety_notes"):
-        st.info(f"📌 Critical safety notes: {child['safety_notes']}")
+    safety_notes = child.get("safety_notes")
+    if safety_notes:
+        st.info(f"📌 Critical safety notes: {safety_notes}")
 
+    st.subheader("📞 Emergency Contacts")
     if guardians:
-        st.subheader("📞 Emergency Contacts")
         for guardian in guardians:
             name = guardian.get("full_name") or "Guardian"
             relationship = guardian.get("relationship")
-            role_label = f" ({relationship})" if relationship else ""
-            primary_badge = "⭐ PRIMARY GUARDIAN: " if guardian.get("is_primary") else ""
-            st.write(f"**{primary_badge}{name}**{role_label}")
+            primary_badge = "⭐ Primary guardian · " if guardian.get("is_primary") else ""
+            st.write(f"**{primary_badge}{name}**" + (f" ({relationship})" if relationship else ""))
             phone = guardian.get("phone")
             if phone:
                 clean_phone = "".join(ch for ch in str(phone) if ch.isdigit() or ch == "+")
-                st.markdown(
-                    f'<a href="tel:{clean_phone}" target="_top" '
-                    'style="display:inline-block;width:100%;max-width:300px;text-align:center;'
-                    'padding:12px 0;font-size:15px;font-weight:bold;border-radius:8px;'
-                    'text-decoration:none;margin-bottom:15px;background-color:#2ecc71;color:white;'
-                    f'">📞 CALL {name.upper()}</a>',
-                    unsafe_allow_html=True,
-                )
+                st.link_button(f"Call {name}", f"tel:{clean_phone}", use_container_width=True)
     else:
         st.info("No guardian contact is listed for this student.")
     st.stop()
@@ -171,7 +192,7 @@ if app_mode == "🚀 Admin Dashboard (Demo)":
 
                 if st.button("GENERATE NEW SECURE NFC TOKEN"):
                     try:
-                        # Fail before inserting a token if the public app URL is not configured.
+                        # Fail before inserting a token if the app's public address cannot be read.
                         build_profile_url("configuration-check")
                         tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
                         hex_token = tag_res.data[0]["public_token"]
