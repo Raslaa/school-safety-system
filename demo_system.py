@@ -87,6 +87,9 @@ if app_mode == "NFC Tag Scanner Gateway":
 # =============================================================
 # STAGE 3: STUDENT MANAGEMENT & ADMINISTRATION SYSTEM
 # =============================================================
+# =============================================================
+# STAGE 3: STUDENT MANAGEMENT & ADMINISTRATION SYSTEM
+# =============================================================
 elif app_mode == "Admin Portal Management":
     st.title("🔑 Administrative Control Panel")
     
@@ -100,100 +103,23 @@ elif app_mode == "Admin Portal Management":
         
         if st.button("AUTHENTICATE SESSION", use_container_width=True):
             try:
-                # This signs in directly via Supabase Auth using your created user credentials
+                # 1. Sign in via Supabase Auth
                 auth_res = supabase.auth.sign_in_with_password({"email": email, "password": password})
                 
-                # Double check that the login returned a valid session token
-                if auth_res.session:
-                    st.session_state.logged_in = True
-                    st.success("Session verified! Accessing secure system data modules...")
-                    st.rerun()
+                if auth_res.user:
+                    user_uuid = auth_res.user.id
+                    
+                    # 2. FORCE A DIRECT CHECK: See if this UUID is actually inside your public.admin_users table
+                    admin_check = supabase.table("admin_users").select("*").eq("user_id", user_uuid).execute()
+                    
+                    if admin_check.data:
+                        st.session_state.logged_in = True
+                        st.success("Session verified! Accessing secure system data modules...")
+                        st.rerun()
+                    else:
+                        st.error(f"Authentication rejected: Your account exists, but your UID ({user_uuid}) is missing from the public.admin_users table layout.")
                 else:
                     st.error("Authentication rejected: User token could not be verified.")
             except Exception as e:
-                st.error("Authentication rejected: Check your email/password or confirm your UID is in the admin_users table.")
+                st.error(f"Authentication rejected: Check your credentials or network configuration. Error: {str(e)}")
         st.stop()
-
-    # USER IS AUTHENTICATED - DISPLAY DASHBOARD PANEL CONTROLS
-    st.sidebar.success("Proximind Secure Session")
-    if st.sidebar.button("Terminate Access Session (Logout)"):
-        st.session_state.logged_in = False
-        st.rerun()
-
-    admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags"])
-
-    # 1. Directory View
-    with admin_tabs[0]:
-        st.subheader("Student Database Manifest")
-        try:
-            students_res = supabase.table("students").select("*").execute().data
-            if students_res:
-                df_students = pd.DataFrame(students_res)[["student_id", "full_name", "class_name", "allergies"]]
-                st.dataframe(df_students, use_container_width=True)
-            else:
-                st.info("No active student items found.")
-        except Exception as e:
-            st.error("Authorization Block: Ensure your authenticated profile UUID is inside the 'admin_users' table.")
-
-    # 2. Complete Registration Intake Form
-    with admin_tabs[1]:
-        st.subheader("Enroll New Student Identity")
-        with st.form("new_student_form", clear_on_submit=True):
-            s_id = st.text_input("School Registration ID (e.g. ST-2026-09):")
-            s_name = st.text_input("Legal Full Name:")
-            s_class = st.text_input("Assigned Classroom / Grade:")
-            s_photo = st.text_input("Photo Storage URL Endpoint:")
-            s_allergies = st.text_input("Known Allergies:", value="None")
-            s_notes = st.text_area("Critical Safety / Behavioral Notes (e.g. Autistic, non-verbal):")
-            s_bio = st.text_area("Profile Biography / Extra Info:")
-            
-            st.write("---")
-            st.subheader("Primary Guardian Information")
-            g_name = st.text_input("Guardian Full Name:")
-            g_rel = st.text_input("Relationship to Child (e.g. Father, Mother):")
-            g_phone = st.text_input("Active Phone Line Number (Include Country Code):")
-            
-            if st.form_submit_button("COMMIT RECORD TRANSACTION TO CLOUD"):
-                if not s_id or not s_name or not g_phone:
-                    st.error("Mandatory form entry constraints triggered. ID, Name, and Phone cannot be blank.")
-                else:
-                    try:
-                        # 1. Write the Student Row
-                        student_payload = {
-                            "student_id": s_id, "full_name": s_name, "photo_url": s_photo,
-                            "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
-                        }
-                        student_db_res = supabase.table("students").insert(student_payload).execute()
-                        new_student_uuid = student_db_res.data[0]["id"]
-                        
-                        # 2. Write the Bound Guardian Row linked to the UUID
-                        guardian_payload = {
-                            "student_id": new_student_uuid, "full_name": g_name,
-                            "relationship": g_rel, "phone": g_phone, "is_primary": True
-                        }
-                        supabase.table("guardians").insert(guardian_payload).execute()
-                        st.success(f"Success! Registered **{s_name}** along with primary guardian lines.")
-                    except Exception as e:
-                        st.error(f"Failed to submit: {str(e)}")
-
-    # 3. Assign & Retrieve Token Keys for Physical NFC writing
-    with admin_tabs[2]:
-        st.subheader("Configure Physical NFC Tokens")
-        try:
-            students_list = supabase.table("students").select("id, full_name, student_id").execute().data
-            if students_list:
-                student_options = {f"{s['full_name']} ({s['student_id']})": s["id"] for s in students_list}
-                selected_child_name = st.selectbox("Select Student to Bind to Tag:", list(student_options.keys()))
-                selected_uuid = student_options[selected_child_name]
-                
-                if st.button("GENERATE NEW SECURE NFC TOKEN"):
-                    tag_write_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
-                    hex_token = tag_write_res.data[0]["public_token"]
-                    
-                    st.success("🔒 Secure Security Hex Key Generated Successfully!")
-                    st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
-                    st.code(f"https://streamlit.app{hex_token}")
-            else:
-                st.info("No students registered yet.")
-        except Exception as e:
-            st.error("Failed to query records. Verify authentication rules.")
