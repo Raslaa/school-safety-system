@@ -9,23 +9,22 @@ def init_supabase() -> Client:
     return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
 
 supabase = init_supabase()
-st.sidebar.title("🛡️ Proximind Safety Hub")
-app_mode = st.sidebar.radio("Navigation Menu:", ["NFC Tag Scanner Gateway", "🚀 Admin Dashboard (Demo)"])
 
-# Public NFC Tag Scanner Gateway
-if app_mode == "NFC Tag Scanner Gateway":
-    tag_token = st.query_params.get("tag_token", None)
-    if not tag_token:
-        st.info("👋 Proximind System online. Awaiting data from physical NFC tag tap event.")
-        st.stop()
+# =============================================================
+# AUTOMATIC GATEKEEPER ROUTING (SMART OVERRIDE)
+# =============================================================
+# Check if a tag token exists in the browser URL link right now
+tag_token = st.query_params.get("tag_token", None)
 
+if tag_token:
+    # 🚨 INTERCEPT ROUTE: A tag was scanned! Bypass everything else and show the profile fullscreen.
     try:
         tag_res = supabase.table("nfc_tags").select("student_id, status").eq("public_token", tag_token).execute()
         if not tag_res.data or tag_res.data[0]["status"] != "active":
             st.error("🚨 Access Refused: This NFC tag is inactive or has been reported lost.")
             st.stop()
         student_uuid = tag_res.data[0]["student_id"]
-    except Exception:
+    except Exception as e:
         st.error("Connection error while validating security token infrastructure.")
         st.stop()
 
@@ -62,74 +61,88 @@ if app_mode == "NFC Tag Scanner Gateway":
     else:
         st.error("No active primary context lines bound to target student profile index.")
 
-# Admin Dashboard (Demo Mode)
-elif app_mode == "🚀 Admin Dashboard (Demo)":
-    st.title("🔑 Administrative Control Panel (DEMO MODE)")
-    st.success("🔓 Security authentication disabled for demonstration presentation purposes.")
-    admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags"])
+else:
+    # ⚙️ STANDARD ROUTE: No tag scanned. Load the presentation menu and Admin Dashboard.
+    st.sidebar.title("🛡️ Proximind Safety Hub")
+    app_mode = st.sidebar.radio("Navigation Menu:", ["🚀 Admin Dashboard (Demo)", "ℹ️ System Info"])
 
-    with admin_tabs[0]:
-        st.subheader("Student Database Manifest")
-        try:
-            students_res = supabase.table("students").select("*").execute().data
-            if students_res:
-                st.dataframe(pd.DataFrame(students_res)[["student_id", "full_name", "class_name", "allergies"]], use_container_width=True)
-            else:
-                st.info("No active student items found.")
-        except Exception as e:
-            st.error(f"Database read failure: {str(e)}")
+    if app_mode == "🚀 Admin Dashboard (Demo)":
+        st.title("🔑 Administrative Control Panel (DEMO MODE)")
+        st.success("🔓 Security authentication disabled for demonstration presentation purposes.")
+        admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags"])
 
-    with admin_tabs[1]:
-        st.subheader("Enroll New Student Identity")
-        with st.form("new_student_form", clear_on_submit=True):
-            s_id = st.text_input("School Registration ID (e.g. ST-2026-09):")
-            s_name = st.text_input("Legal Full Name:")
-            s_class = st.text_input("Assigned Classroom / Grade:")
-            s_photo = st.text_input("Photo Storage URL Endpoint:")
-            s_allergies = st.text_input("Known Allergies:", value="None")
-            s_notes = st.text_area("Critical Safety / Behavioral Notes:")
-            s_bio = st.text_area("Profile Biography / Extra Info:")
-            
-            st.write("---")
-            st.subheader("Primary Guardian Information")
-            g_name = st.text_input("Guardian Full Name:")
-            g_rel = st.text_input("Relationship to Child (e.g. Father, Mother):")
-            g_phone = st.text_input("Active Phone Line Number (Include Country Code):")
-            
-            if st.form_submit_button("COMMIT RECORD TRANSACTION TO CLOUD"):
-                if not s_id or not s_name or not g_phone:
-                    st.error("Mandatory form entry constraints triggered. ID, Name, and Phone cannot be blank.")
+        # 1. Directory View
+        with admin_tabs[0]:
+            st.subheader("Student Database Manifest")
+            try:
+                students_res = supabase.table("students").select("*").execute().data
+                if students_res:
+                    st.dataframe(pd.DataFrame(students_res)[["student_id", "full_name", "class_name", "allergies"]], use_container_width=True)
                 else:
-                    try:
-                        student_payload = {
-                            "student_id": s_id, "full_name": s_name, "photo_url": s_photo,
-                            "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
-                        }
-                        new_student_uuid = supabase.table("students").insert(student_payload).execute().data[0]["id"]
-                        guardian_payload = {
-                            "student_id": new_student_uuid, "full_name": g_name,
-                            "relationship": g_rel, "phone": g_phone, "is_primary": True
-                        }
-                        supabase.table("guardians").insert(guardian_payload).execute()
-                        st.success(f"Success! Registered **{s_name}** along with primary guardian lines.")
-                    except Exception as e:
-                        st.error(f"Failed to submit: {str(e)}")
+                    st.info("No active student items found.")
+            except Exception as e:
+                st.error(f"Database read failure: {str(e)}")
 
-    with admin_tabs[2]:
-        st.subheader("Configure Physical NFC Tokens")
-        try:
-            students_list = supabase.table("students").select("id, full_name, student_id").execute().data
-            if students_list:
-                student_options = {f"{s['full_name']} ({s['student_id']})": s["id"] for s in students_list}
-                selected_child_name = st.selectbox("Select Student to Bind to Tag:", list(student_options.keys()))
-                selected_uuid = student_options[selected_child_name]
+        # 2. Registration Intake Form
+        with admin_tabs[1]:
+            st.subheader("Enroll New Student Identity")
+            with st.form("new_student_form", clear_on_submit=True):
+                s_id = st.text_input("School Registration ID (e.g. AUS-2026-001):")
+                s_name = st.text_input("Legal Full Name:")
+                s_class = st.text_input("Assigned Classroom / Grade:")
+                s_photo = st.text_input("Photo Storage URL Endpoint:")
+                s_allergies = st.text_input("Known Allergies:", value="None")
+                s_notes = st.text_area("Critical Safety / Behavioral Notes:")
+                s_bio = st.text_area("Profile Biography / Extra Info:")
                 
-                if st.button("GENERATE NEW SECURE NFC TOKEN"):
-                    hex_token = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute().data[0]["public_token"]
-                    st.success("🔒 Secure Security Hex Key Generated Successfully!")
-                    st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
-                    st.code(f"https://streamlit.app{hex_token}")
-            else:
-                st.info("No students registered yet.")
-        except Exception as e:
-            st.error(f"Failed to query records: {str(e)}")
+                st.write("---")
+                st.subheader("Primary Guardian Information")
+                g_name = st.text_input("Guardian Full Name:")
+                g_rel = st.text_input("Relationship to Child (e.g. Father, Mother):")
+                g_phone = st.text_input("Active Phone Line Number (Include Country Code):")
+                
+                if st.form_submit_button("COMMIT RECORD TRANSACTION TO CLOUD"):
+                    if not s_id or not s_name or not g_phone:
+                        st.error("Mandatory form entry constraints triggered. ID, Name, and Phone cannot be blank.")
+                    else:
+                        try:
+                            student_payload = {
+                                "student_id": s_id, "full_name": s_name, "photo_url": s_photo,
+                                "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
+                            }
+                            inserted_student = supabase.table("students").insert(student_payload).execute()
+                            new_student_uuid = inserted_student.data[0]["id"]
+                            
+                            guardian_payload = {
+                                "student_id": new_student_uuid, "full_name": g_name,
+                                "relationship": g_rel, "phone": g_phone, "is_primary": True
+                            }
+                            supabase.table("guardians").insert(guardian_payload).execute()
+                            st.success(f"Success! Registered **{s_name}** along with primary guardian lines.")
+                        except Exception as e:
+                            st.error(f"Failed to submit: {str(e)}")
+
+        # 3. Assign Tags
+        with admin_tabs[2]:
+            st.subheader("Configure Physical NFC Tokens")
+            try:
+                students_list = supabase.table("students").select("id, full_name, student_id").execute().data
+                if students_list:
+                    student_options = {f"{s['full_name']} ({s['student_id']})": s["id"] for s in students_list}
+                    selected_child_name = st.selectbox("Select Student to Bind to Tag:", list(student_options.keys()))
+                    selected_uuid = student_options[selected_child_name]
+                    
+                    if st.button("GENERATE NEW SECURE NFC TOKEN"):
+                        tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
+                        hex_token = tag_res.data[0]["public_token"]
+                        st.success("🔒 Secure Security Hex Key Generated Successfully!")
+                        st.info("Write this exact URL configuration target below onto your physical NFC tag parameter data window:")
+                        st.code(f"https://streamlit.app{hex_token}")
+                else:
+                    st.info("No students registered yet.")
+            except Exception as e:
+                st.error(f"Failed to query records: {str(e)}")
+
+    elif app_mode == "ℹ️ System Info":
+        st.title("🛡️ Proximind Safety Systems")
+        st.info("NFC Tag gateway active. Access control panel via sidebar controls.")
