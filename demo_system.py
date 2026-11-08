@@ -183,7 +183,6 @@ if app_mode == "🚀 Admin Dashboard":
 
     with admin_tabs[3]:
         st.subheader("📍 Live Location Tracking Logs")
-        # Pull real scanned log locations from the server and display on an interactive map
         try:
             logs_res = supabase.table("scan_logs").select("latitude, longitude").execute().data
             if logs_res:
@@ -193,5 +192,8 @@ if app_mode == "🚀 Admin Dashboard":
                 else:
                     st.info("Awaiting live scanning coordinates to stream onto map layout.")
             else:
-                # Demo simulation coordinates for Hargeisa City (Jigjiga Yar area)
+                hargeisa_demo = pd.DataFrame({"lat": [9.5623], "lon": [44.0652]})
+                st.caption("Showing demo coordinate simulation area for Hargeisa, Somalia:")
+                st.map(hargeisa_demo)
+        except Exception as e:
 
