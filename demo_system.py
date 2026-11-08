@@ -224,7 +224,7 @@ def init_supabase() -> Client:
     return create_client(url, key)
 
 
-def build_app_url(parameter: str, value: str) -> str:
+def build_app_url(parameter: str, value: str, extra_params: dict | None = None) -> str:
     """Build a link to this Streamlit app with one query parameter."""
     try:
         base_url = st.secrets.get("public_app_url")
@@ -238,7 +238,8 @@ def build_app_url(parameter: str, value: str) -> str:
             base_url = None
     if not base_url:
         raise ValueError("Set public_app_url or PUBLIC_APP_URL to the deployed Streamlit URL.")
-    return f"{str(base_url).split('?', 1)[0].rstrip('/')}?{urlencode({parameter: value})}"
+    params = {parameter: value, **(extra_params or {})}
+    return f"{str(base_url).split('?', 1)[0].rstrip('/')}?{urlencode(params)}"
 
 
 def token_hash(token: str) -> str:
@@ -474,7 +475,7 @@ if share_token:
     student_uuid = share["student_id"]
     student_res = (
         supabase.table("students")
-        .select("full_name, class_name")
+        .select("full_name, class_name, student_id")
         .eq("id", student_uuid)
         .limit(1)
         .execute()
@@ -483,6 +484,13 @@ if share_token:
         st.error("Student profile not found.")
         st.stop()
     student = student_res.data[0]
+    # The school-facing student ID identifies the child in the URL; the random
+    # parent token remains the access credential. Verify the two match.
+    url_student_id = st.query_params.get("student_id")
+    expected_student_id = str(student.get("student_id") or student_uuid)
+    if url_student_id and str(url_student_id) != expected_student_id:
+        st.error("This parent link does not match the student ID in the URL.")
+        st.stop()
 
     parent_name = str(share.get("guardian_name") or "Parent")
     st.title(f"👨‍👩‍👦 {parent_name}’s Parent Portal")
@@ -616,9 +624,14 @@ if app_mode == "👨‍👩‍👦 Parent Portal Gateway":
         open_portal = st.form_submit_button("Open Parent Portal", type="primary")
     if open_portal and parent_token.strip():
         submitted_value = parent_token.strip()
+        parsed_student_id = None
         if "share_token=" in submitted_value:
-            submitted_value = parse_qs(urlparse(submitted_value).query).get("share_token", [""])[0]
+            parsed_query = parse_qs(urlparse(submitted_value).query)
+            submitted_value = parsed_query.get("share_token", [""])[0]
+            parsed_student_id = parsed_query.get("student_id", [None])[0]
         st.query_params["share_token"] = submitted_value
+        if parsed_student_id:
+            st.query_params["student_id"] = parsed_student_id
         st.rerun()
     st.stop()
 
@@ -819,7 +832,21 @@ if app_mode == "🚀 Admin Dashboard":
                                     on_conflict="student_id,guardian_key",
                                 ).execute()
                                 st.success("Private link ready for this parent. Resetting it invalidated their previous link.")
-                                st.code(build_app_url("share_token", raw_token))
+                                st.code(
+                                    build_app_url(
+                                        "share_token",
+                                        raw_token,
+                                        {
+                                            "student_id": str(
+                                                student_rows[selected_index].get("student_id") or selected_student_id
+                                            )
+                                        },
+                                    )
+                                )
+                                st.caption(
+                                    "The URL includes this student’s school ID for identification. "
+                                    "The private random token in the same URL is required to open the portal."
+                                )
                                 st.caption(
                                     "Send this URL privately to this guardian. It opens this child’s portal, "
                                     "including opted-in NFC scanner-phone location updates."
