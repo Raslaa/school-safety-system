@@ -6,6 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 from supabase import create_client, Client
 
@@ -257,6 +258,52 @@ def valid_share(token: str):
     return result.data[0] if result.data else None
 
 
+def render_location_map(locations: list[dict], *, key: str) -> None:
+    """Render reported GPS coordinates on an interactive, zoomable map."""
+    if not locations:
+        return
+    frame = pd.DataFrame(locations)
+    frame["latitude"] = frame["latitude"].astype(float)
+    frame["longitude"] = frame["longitude"].astype(float)
+    center_lat = float(frame["latitude"].mean())
+    center_lon = float(frame["longitude"].mean())
+    span = max(
+        float(frame["latitude"].max() - frame["latitude"].min()),
+        float(frame["longitude"].max() - frame["longitude"].min()),
+    )
+    zoom = 17 if len(frame) == 1 else (14 if span < 0.01 else 11 if span < 0.1 else 8)
+    marker = pdk.Layer(
+        "ScatterplotLayer",
+        data=frame,
+        get_position="[longitude, latitude]",
+        get_radius=14,
+        radius_units="pixels",
+        get_fill_color=[14, 116, 96, 230],
+        get_line_color=[255, 255, 255, 255],
+        line_width_min_pixels=2,
+        stroked=True,
+        pickable=True,
+        auto_highlight=True,
+    )
+    deck = pdk.Deck(
+        layers=[marker],
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=zoom,
+            pitch=0,
+        ),
+        map_style=None,
+        tooltip={
+            "text": (
+                "{student}\nLatitude: {latitude}\nLongitude: {longitude}\n"
+                "Reported accuracy: ±{accuracy_meters} m"
+            )
+        },
+    )
+    st.pydeck_chart(deck, width="stretch", key=key, alt="Interactive map of reported phone locations")
+
+
 def save_current_location(student_id: str, point: dict) -> str | None:
     try:
         latitude = float(point["latitude"])
@@ -479,7 +526,12 @@ if share_token:
                 if previous_report is not None:
                     st.success("New opted-in NFC scan location received.")
                 st.session_state[report_key] = current_report
-            point = [{"lat": float(scan["latitude"]), "lon": float(scan["longitude"])}]
+            point = [{
+                "student": student.get("full_name") or "Student",
+                "latitude": float(scan["latitude"]),
+                "longitude": float(scan["longitude"]),
+                "accuracy_meters": round(float(scan["accuracy_meters"])),
+            }]
             captured = datetime.fromisoformat(str(scan["captured_at"]).replace("Z", "+00:00"))
             if captured.tzinfo is None:
                 captured = captured.replace(tzinfo=timezone.utc)
@@ -488,11 +540,12 @@ if share_token:
             st.success("🟢 Scanner phone is sharing live location now.") if is_live else st.info(
                 "Showing the last known scanner phone location. It is no longer updating."
             )
-            st.map(pd.DataFrame(point), latitude="lat", longitude="lon")
+            render_location_map(point, key=f"parent_nfc_location_{student_uuid}")
             st.caption(
                 f"Reported {captured.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} · "
-                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m · "
-                "browser location accuracy can vary"
+                f"GPS coordinates {float(scan['latitude']):.6f}, {float(scan['longitude']):.6f} · "
+                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m. "
+                "Zoom or pan the map; GPS accuracy depends on the phone."
             )
 
         show_parent_scan_report()
@@ -769,16 +822,25 @@ if app_mode == "🚀 Admin Dashboard":
                 points = []
                 detail_rows = []
                 for row in rows:
-                    points.append({"lat": float(row["latitude"]), "lon": float(row["longitude"])})
+                    student_name = students_by_uuid.get(str(row["student_id"]), "Student")
+                    points.append(
+                        {
+                            "student": student_name,
+                            "latitude": float(row["latitude"]),
+                            "longitude": float(row["longitude"]),
+                            "accuracy_meters": round(float(row["accuracy_meters"])),
+                        }
+                    )
                     captured = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00"))
                     detail_rows.append(
                         {
                             "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
                             "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "Coordinates": f"{float(row['latitude']):.6f}, {float(row['longitude']):.6f}",
                             "Accuracy (m)": round(float(row["accuracy_meters"])),
                         }
                     )
-                st.map(pd.DataFrame(points), latitude="lat", longitude="lon")
+                render_location_map(points, key="admin_parent_locations_map")
                 st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
             show_recent_locations()
@@ -813,7 +875,14 @@ if app_mode == "🚀 Admin Dashboard":
                 points = []
                 detail_rows = []
                 for row in rows:
-                    points.append({"lat": float(row["latitude"]), "lon": float(row["longitude"])})
+                    points.append(
+                        {
+                            "student": students_by_uuid.get(str(row["student_id"]), "Student"),
+                            "latitude": float(row["latitude"]),
+                            "longitude": float(row["longitude"]),
+                            "accuracy_meters": round(float(row["accuracy_meters"])),
+                        }
+                    )
                     captured = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00"))
                     if captured.tzinfo is None:
                         captured = captured.replace(tzinfo=timezone.utc)
@@ -824,10 +893,11 @@ if app_mode == "🚀 Admin Dashboard":
                             "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
                             "Status": "🟢 Live" if live_now else "Last known",
                             "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "Coordinates": f"{float(row['latitude']):.6f}, {float(row['longitude']):.6f}",
                             "Accuracy (m)": round(float(row["accuracy_meters"])),
                         }
                     )
-                st.map(pd.DataFrame(points), latitude="lat", longitude="lon")
+                render_location_map(points, key="admin_nfc_locations_map")
                 st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
             show_recent_tag_scans()
