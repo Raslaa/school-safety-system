@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 import pandas as pd
-import streamlit as st
+import streamlit as sta
 from supabase import create_client, Client
 
 LOCATION_FRESH_SECONDS = 120
