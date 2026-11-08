@@ -1,8 +1,75 @@
 import os
-from urllib.parse import urlencode
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlencode, urlparse
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
+
+LOCATION_FRESH_SECONDS = 120
+LOCATION_RETENTION_HOURS = 24
+
+GPS_HTML = """
+<div>
+  <button id="gps-start" type="button">Start location sharing</button>
+  <button id="gps-stop" type="button">Stop sharing</button>
+  <p id="gps-status" aria-live="polite">Location sharing is off.</p>
+</div>
+"""
+
+GPS_CSS = """
+button { border: 0; border-radius: .5rem; padding: .65rem 1rem; margin: 0 .5rem .5rem 0;
+  background: var(--st-primary-color); color: var(--st-background-color); font: inherit;
+  font-weight: 600; cursor: pointer; }
+#gps-stop { background: transparent; color: var(--st-primary-color); border: 1px solid var(--st-primary-color); }
+p { color: var(--st-text-color); }
+"""
+
+GPS_JS = """
+export default function(component) {
+  const { parentElement, setStateValue, setTriggerValue } = component;
+  const start = parentElement.querySelector('#gps-start');
+  const stop = parentElement.querySelector('#gps-stop');
+  const status = parentElement.querySelector('#gps-status');
+  let watchId = null;
+  let lastSent = 0;
+  function show(message) { status.textContent = message; setStateValue('status', message); }
+
+  start.onclick = () => {
+    if (!navigator.geolocation) { show('This browser does not support location sharing.'); return; }
+    if (watchId !== null) return;
+    show('Requesting location permission…');
+    watchId = navigator.geolocation.watchPosition((position) => {
+      const now = Date.now();
+      if (now - lastSent < 15000) return;
+      lastSent = now;
+      show('Sharing location. Keep this page open.');
+      setTriggerValue('position', {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        captured_at: new Date(position.timestamp).toISOString()
+      });
+    }, (error) => {
+      const messages = {1:'Location permission denied. Allow it in browser settings.',
+        2:'Your device could not determine its location. Try again outdoors.',
+        3:'Location request timed out. Keep the page open and try again.'};
+      show(messages[error.code] || 'Location is unavailable.');
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }, {enableHighAccuracy:true, maximumAge:10000, timeout:30000});
+  };
+
+  stop.onclick = () => {
+    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    show('Sharing stopped.');
+    setTriggerValue('stop', Date.now());
+  };
+  return () => { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); };
+}
+"""
 
 # Initialize Database securely from secrets.toml
 def init_supabase() -> Client:
@@ -33,12 +100,58 @@ def build_app_url(parameter: str, value: str) -> str:
         raise ValueError("Set public_app_url or PUBLIC_APP_URL to the deployed Streamlit URL.")
     return f"{str(base_url).split('?', 1)[0].rstrip('/')}?{urlencode({parameter: value})}"
 
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def valid_share(token: str):
+    result = (
+        supabase.table("student_location_shares")
+        .select("student_id")
+        .eq("token_hash", token_hash(token))
+        .eq("enabled", True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def save_current_location(student_id: str, point: dict) -> str | None:
+    try:
+        latitude = float(point["latitude"])
+        longitude = float(point["longitude"])
+        accuracy = float(point["accuracy"])
+        captured = datetime.fromisoformat(str(point["captured_at"]).replace("Z", "+00:00"))
+        if captured.tzinfo is None:
+            captured = captured.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            return "The device returned invalid coordinates."
+        if not (0 <= accuracy <= 10000):
+            return "The device returned invalid GPS accuracy."
+        if captured > now + timedelta(seconds=60) or captured < now - timedelta(minutes=5):
+            return "The GPS reading is too old or the device clock is incorrect. Waiting for a fresh reading."
+        supabase.table("student_live_locations").upsert(
+            {
+                "student_id": student_id,
+                "latitude": latitude,
+                "longitude": longitude,
+                "accuracy_meters": accuracy,
+                "captured_at": captured.astimezone(timezone.utc).isoformat(),
+            },
+            on_conflict="student_id",
+        ).execute()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "Could not read the location result. Please try again."
+    except Exception:
+        return "Could not save the location. Check the connection and try again."
+    return None
+
 supabase = init_supabase()
 
-# Fetch parameters directly from browser link string
+# NFC profiles and guardian sharing use separate private/public URL parameters.
 tag_token = st.query_params.get("tag_token", None)
-browser_lat = st.query_params.get("lat", None)
-browser_lon = st.query_params.get("lon", None)
 
 # =============================================================
 # 🛰️ PRODUCTION GEOLOCATION INTERCEPTOR
@@ -62,14 +175,6 @@ if tag_token:
             
         student_uuid = tag_data["student_id"]
         
-        # Log the location coordinates seamlessly if passed via browser query string
-        if browser_lat and browser_lon:
-            supabase.table("scan_logs").insert({
-                "student_id": student_uuid,
-                "latitude": float(browser_lat),
-                "longitude": float(browser_lon)
-            }).execute()
-            
         child_res = supabase.table("students").select("*").eq("id", student_uuid).execute()
         guardian_res = supabase.table("guardians").select("*").eq("student_id", student_uuid).execute()
     except Exception as e:
@@ -82,24 +187,6 @@ if tag_token:
 
     child = child_res.data[0]
     guardians = guardian_res.data or []
-
-    # Request browser GPS coordinates via lightweight automated HTML injection script
-    if not browser_lat or not browser_lon:
-        st.markdown(
-            f"""
-            <script>
-            navigator.geolocation.getCurrentPosition(function(position) {{
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                const currentUrl = new URL(window.location.href);
-                currentUrl.searchParams.set('lat', lat);
-                currentUrl.searchParams.set('lon', lon);
-                window.location.href = currentUrl.toString();
-            }});
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
 
     st.title("🛡️ Student Safety Profile")
     if child.get("photo_url") and child["photo_url"].strip() != "":
@@ -125,16 +212,131 @@ if tag_token:
                 st.link_button(f"📞 Call {g.get('full_name') or 'Guardian'}", f"tel:{clean_phone}")
     st.stop()
 
+
+# Guardian portal: a private sharing link opens this page directly.
+share_token = st.query_params.get("share_token")
+if share_token:
+    try:
+        share = valid_share(str(share_token))
+    except Exception:
+        share = None
+    if not share:
+        st.error("This parent sharing link is invalid or has been disabled.")
+        st.stop()
+
+    student_uuid = share["student_id"]
+    student_res = (
+        supabase.table("students")
+        .select("full_name, class_name")
+        .eq("id", student_uuid)
+        .limit(1)
+        .execute()
+    )
+    if not student_res.data:
+        st.error("Student profile not found.")
+        st.stop()
+    student = student_res.data[0]
+
+    st.title("👨‍👩‍👦 Parent Location Portal")
+    st.caption("Proximind Safety Hub")
+    with st.container(border=True):
+        st.subheader(f"Share location for {student.get('full_name') or 'this student'}")
+        st.write(
+            "When you press **Start location sharing**, this phone will ask for your permission "
+            "and send its latest GPS position to the school's protected admin dashboard. "
+            "Sharing works only while this page is open. The system stores the latest point, "
+            "not a route history."
+        )
+        st.caption("You can stop sharing at any time. Location access requires HTTPS and browser permission.")
+        consent = st.checkbox(
+            "I understand and want to share this phone's location for this student.",
+            key="parent_location_consent",
+        )
+
+    if consent:
+        gps_component = st.components.v2.component(
+            "parent_location_sharing",
+            html=GPS_HTML,
+            css=GPS_CSS,
+            js=GPS_JS,
+        )
+        gps_result = gps_component(
+            key="parent_gps_component",
+            on_position_change=lambda: None,
+            on_stop_change=lambda: None,
+            on_status_change=lambda: None,
+        )
+        stop_event = getattr(gps_result, "stop", None)
+        if stop_event and st.session_state.get("parent_last_stop") != stop_event:
+            supabase.table("student_live_locations").delete().eq(
+                "student_id", student_uuid
+            ).execute()
+            st.session_state["parent_last_stop"] = stop_event
+            st.session_state.pop("parent_last_location_time", None)
+            st.success("Sharing stopped and the saved location was removed.")
+
+        point = getattr(gps_result, "position", None)
+        if isinstance(point, dict) and point.get("captured_at"):
+            captured_at = str(point["captured_at"])
+            if st.session_state.get("parent_last_location_time") != captured_at:
+                location_error = save_current_location(student_uuid, point)
+                if location_error:
+                    st.warning(location_error)
+                else:
+                    st.session_state["parent_last_location_time"] = captured_at
+                    st.success("Location received. Sharing stays on while this page remains open.")
+    else:
+        st.info("Check the box above to enable the Start location sharing button.")
+    st.stop()
+
 # -------------------------------------------------------------
 # BACKUP DEMO FALLBACK (IF NO TOKEN IS PRESENT)
 # -------------------------------------------------------------
 st.sidebar.title("🛡️ Proximind Safety Hub")
 app_mode = st.sidebar.radio("Navigation View Portal:", ["🚀 Admin Dashboard", "👨‍👩‍👦 Parent Portal Gateway"])
 
+if app_mode == "👨‍👩‍👦 Parent Portal Gateway":
+    st.title("👨‍👩‍👦 Parent Portal")
+    st.write("Open the private location-sharing link provided by the school to begin sharing.")
+    with st.form("parent_link_form"):
+        parent_token = st.text_input("Paste your private parent sharing link or code", type="password")
+        open_portal = st.form_submit_button("Open Parent Portal", type="primary")
+    if open_portal and parent_token.strip():
+        submitted_value = parent_token.strip()
+        if "share_token=" in submitted_value:
+            submitted_value = parse_qs(urlparse(submitted_value).query).get("share_token", [""])[0]
+        st.query_params["share_token"] = submitted_value
+        st.rerun()
+    st.stop()
+
 # 🚀 VIEW A: ADMIN DASHBOARD PANEL
 if app_mode == "🚀 Admin Dashboard":
-    st.title("🔑 Administrative Control Panel (DEMO)")
-    admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags", "📍 Live Scan Map"])
+    try:
+        admin_password = st.secrets.get("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD")
+    except Exception:
+        admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_password:
+        st.error("Admin access is disabled until you set a strong ADMIN_PASSWORD in deployment secrets.")
+        st.stop()
+    if not st.session_state.get("admin_authenticated"):
+        st.title("🔐 Administrator Sign In")
+        with st.form("admin_login_form"):
+            entered_password = st.text_input("Admin password", type="password")
+            login_clicked = st.form_submit_button("Sign in", type="primary")
+        if login_clicked:
+            import hmac
+            if hmac.compare_digest(entered_password, str(admin_password)):
+                st.session_state["admin_authenticated"] = True
+                st.rerun()
+            st.error("Incorrect password.")
+        st.stop()
+
+    if st.sidebar.button("Sign out"):
+        st.session_state.pop("admin_authenticated", None)
+        st.rerun()
+
+    st.title("🔑 Administrative Control Panel")
+    admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags", "📍 Live GPS"])
 
     with admin_tabs[0]:
         st.subheader("Student Database Manifest")
@@ -214,20 +416,110 @@ if app_mode == "🚀 Admin Dashboard":
             st.error(f"Failed to query records: {str(e)}")
 
     with admin_tabs[3]:
-        st.subheader("📍 Live Location Tracking Logs")
+        st.subheader("📍 Guardian Location Sharing")
+        st.caption("Create a private parent link, revoke it, or view recent locations.")
         try:
-            logs_res = supabase.table("scan_logs").select("latitude, longitude").execute().data
-            if logs_res:
-                df_map = pd.DataFrame(logs_res).dropna().rename(
-                    columns={"latitude": "lat", "longitude": "lon"}
-                )
-                if not df_map.empty:
-                    st.map(df_map)
+            # Read all columns so an optional/missing display column (for example
+            # student_id) does not make the whole selector query fail.
+            students_for_gps = supabase.table("students").select("*").execute().data or []
+            def student_display_name(row):
+                name = row.get("full_name") or row.get("student_name") or row.get("name") or "Student"
+                school_id = row.get("student_id") or row.get("registration_id") or row.get("school_id") or "No school ID"
+                return f"{name} ({school_id})"
+
+            students_by_uuid = {
+                str(row["id"]): student_display_name(row)
+                for row in students_for_gps
+                if row.get("id") is not None
+            }
+            if students_for_gps:
+                if not students_by_uuid:
+                    st.error(
+                        "Student rows were found, but none has an `id` value. "
+                        "The parent location tables need `students.id` as the student key."
+                    )
                 else:
-                    st.info("Awaiting live scanning coordinates to stream onto map layout.")
+                    # Include the row id in the option label so duplicate names/IDs
+                    # do not silently overwrite each other in a dictionary.
+                    student_rows = [row for row in students_for_gps if row.get("id") is not None]
+                    student_labels = [
+                        f"{student_display_name(row)} · {str(row['id'])[:8]}"
+                        for row in student_rows
+                    ]
+                    selected_index = st.selectbox(
+                        "Select student", range(len(student_rows)),
+                        format_func=lambda index: student_labels[index], key="gps_student",
+                    )
+                    selected_student_id = student_rows[selected_index]["id"]
+                    st.caption(f"{len(student_rows)} student(s) available.")
+                    create_col, disable_col = st.columns(2)
+                    with create_col:
+                        if st.button("Create / Reset Parent Sharing Link", type="primary"):
+                            raw_token = secrets.token_urlsafe(32)
+                            supabase.table("student_location_shares").upsert(
+                                {
+                                    "student_id": selected_student_id,
+                                    "token_hash": token_hash(raw_token),
+                                    "enabled": True,
+                                },
+                                on_conflict="student_id",
+                            ).execute()
+                            st.success("New parent link created. Any previous link for this student is now invalid.")
+                            st.code(build_app_url("share_token", raw_token))
+                            st.caption("Send this link privately to the parent. It can submit a location but cannot view it.")
+                    with disable_col:
+                        if st.button("Disable Parent Sharing Link"):
+                            supabase.table("student_location_shares").update({"enabled": False}).eq(
+                                "student_id", selected_student_id
+                            ).execute()
+                            supabase.table("student_live_locations").delete().eq(
+                                "student_id", selected_student_id
+                            ).execute()
+                            st.success("Parent link disabled and latest location removed.")
             else:
-                hargeisa_demo = pd.DataFrame({"lat": [9.5623], "lon": [44.0652]})
-                st.caption("Showing demo coordinate simulation area for Hargeisa, Somalia:")
-                st.map(hargeisa_demo)
+                st.info(
+                    "No student records were returned from Supabase. Add students in the Student Directory / Register tab, "
+                    "then refresh this page. If students are already registered, check the app's Supabase URL/key and "
+                    "the `students` table permissions."
+                )
+
+            st.divider()
+            st.markdown("#### Recent locations")
+            st.caption("Map refreshes every 15 seconds. Locations older than two minutes are hidden.")
+            retention_cutoff = datetime.now(timezone.utc) - timedelta(hours=LOCATION_RETENTION_HOURS)
+            supabase.table("student_live_locations").delete().lt(
+                "captured_at", retention_cutoff.isoformat()
+            ).execute()
+
+            @st.fragment(run_every="15s")
+            def show_recent_locations():
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=LOCATION_FRESH_SECONDS)
+                rows = (
+                    supabase.table("student_live_locations")
+                    .select("student_id, latitude, longitude, accuracy_meters, captured_at")
+                    .gte("captured_at", cutoff.isoformat())
+                    .execute()
+                    .data
+                    or []
+                )
+                if not rows:
+                    st.info("No parent phones are sharing a recent location right now.")
+                    return
+                points = []
+                detail_rows = []
+                for row in rows:
+                    points.append({"lat": float(row["latitude"]), "lon": float(row["longitude"])})
+                    captured = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00"))
+                    detail_rows.append(
+                        {
+                            "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
+                            "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "Accuracy (m)": round(float(row["accuracy_meters"])),
+                        }
+                    )
+                st.map(pd.DataFrame(points), latitude="lat", longitude="lon")
+                st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+
+            show_recent_locations()
         except Exception as e:
-            st.error(f"Failed to load location logs: {e}")
+            st.error(f"Could not load GPS sharing data: {e}")
