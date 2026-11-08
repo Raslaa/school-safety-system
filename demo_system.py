@@ -10,69 +10,7 @@ import streamlit as st
 from supabase import create_client, Client
 
 LOCATION_FRESH_SECONDS = 120
-LOCATION_RETENTION_HOURS = 24
 SCAN_LOCATION_RETENTION_HOURS = 24
-
-GPS_HTML = """
-<div>
-  <button id="gps-start" type="button">Start location sharing</button>
-  <button id="gps-stop" type="button">Stop sharing</button>
-  <p id="gps-status" aria-live="polite">Location sharing is off.</p>
-</div>
-"""
-
-GPS_CSS = """
-button { border: 0; border-radius: .5rem; padding: .65rem 1rem; margin: 0 .5rem .5rem 0;
-  background: var(--st-primary-color); color: var(--st-background-color); font: inherit;
-  font-weight: 600; cursor: pointer; }
-#gps-stop { background: transparent; color: var(--st-primary-color); border: 1px solid var(--st-primary-color); }
-p { color: var(--st-text-color); }
-"""
-
-GPS_JS = """
-export default function(component) {
-  const { parentElement, setStateValue, setTriggerValue } = component;
-  const start = parentElement.querySelector('#gps-start');
-  const stop = parentElement.querySelector('#gps-stop');
-  const status = parentElement.querySelector('#gps-status');
-  let watchId = null;
-  let lastSent = 0;
-  function show(message) { status.textContent = message; setStateValue('status', message); }
-
-  start.onclick = () => {
-    if (!navigator.geolocation) { show('This browser does not support location sharing.'); return; }
-    if (watchId !== null) return;
-    show('Requesting location permission…');
-    watchId = navigator.geolocation.watchPosition((position) => {
-      const now = Date.now();
-      if (now - lastSent < 15000) return;
-      lastSent = now;
-      show('Sharing location. Keep this page open.');
-      setTriggerValue('position', {
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy,
-        captured_at: new Date(position.timestamp).toISOString()
-      });
-    }, (error) => {
-      const messages = {1:'Location permission denied. Allow it in browser settings.',
-        2:'Your device could not determine its location. Try again outdoors.',
-        3:'Location request timed out. Keep the page open and try again.'};
-      show(messages[error.code] || 'Location is unavailable.');
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    }, {enableHighAccuracy:true, maximumAge:10000, timeout:30000});
-  };
-
-  stop.onclick = () => {
-    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
-    watchId = null;
-    show('Sharing stopped.');
-    setTriggerValue('stop', Date.now());
-  };
-  return () => { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); };
-}
-"""
 
 SCAN_GPS_HTML = """
 <div class="scan-location-action" style="border:3px solid #075E54;border-radius:14px;padding:20px;background:#EAF7F5;font-family:Georgia, 'Times New Roman', serif;">
@@ -300,37 +238,6 @@ def render_location_map(locations: list[dict]) -> None:
         use_container_width=True,
     )
 
-
-def save_current_location(student_id: str, point: dict) -> str | None:
-    try:
-        latitude = float(point["latitude"])
-        longitude = float(point["longitude"])
-        accuracy = float(point["accuracy"])
-        captured = datetime.fromisoformat(str(point["captured_at"]).replace("Z", "+00:00"))
-        if captured.tzinfo is None:
-            captured = captured.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-            return "The device returned invalid coordinates."
-        if not (0 <= accuracy <= 10000):
-            return "The device returned invalid GPS accuracy."
-        if captured > now + timedelta(seconds=60) or captured < now - timedelta(minutes=5):
-            return "The GPS reading is too old or the device clock is incorrect. Waiting for a fresh reading."
-        supabase.table("student_live_locations").upsert(
-            {
-                "student_id": student_id,
-                "latitude": latitude,
-                "longitude": longitude,
-                "accuracy_meters": accuracy,
-                "captured_at": captured.astimezone(timezone.utc).isoformat(),
-            },
-            on_conflict="student_id",
-        ).execute()
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return "Could not read the location result. Please try again."
-    except Exception:
-        return "Could not save the location. Check the connection and try again."
-    return None
 
 supabase = init_supabase()
 
@@ -560,54 +467,6 @@ if share_token:
 
         show_parent_scan_report()
 
-    with st.container(border=True):
-        st.subheader(f"Share location for {student.get('full_name') or 'this student'}")
-        st.write(
-            "When you press **Start location sharing**, this phone will ask for your permission "
-            "and send its latest GPS position to the school's protected admin dashboard. "
-            "Sharing works only while this page is open. The system stores the latest point, "
-            "not a route history."
-        )
-        st.caption("You can stop sharing at any time. Location access requires HTTPS and browser permission.")
-        consent = st.checkbox(
-            "I understand and want to share this phone's location for this student.",
-            key="parent_location_consent",
-        )
-
-    if consent:
-        gps_component = st.components.v2.component(
-            "parent_location_sharing",
-            html=GPS_HTML,
-            css=GPS_CSS,
-            js=GPS_JS,
-        )
-        gps_result = gps_component(
-            key="parent_gps_component",
-            on_position_change=lambda: None,
-            on_stop_change=lambda: None,
-            on_status_change=lambda: None,
-        )
-        stop_event = getattr(gps_result, "stop", None)
-        if stop_event and st.session_state.get("parent_last_stop") != stop_event:
-            supabase.table("student_live_locations").delete().eq(
-                "student_id", student_uuid
-            ).execute()
-            st.session_state["parent_last_stop"] = stop_event
-            st.session_state.pop("parent_last_location_time", None)
-            st.success("Sharing stopped and the saved location was removed.")
-
-        point = getattr(gps_result, "position", None)
-        if isinstance(point, dict) and point.get("captured_at"):
-            captured_at = str(point["captured_at"])
-            if st.session_state.get("parent_last_location_time") != captured_at:
-                location_error = save_current_location(student_uuid, point)
-                if location_error:
-                    st.warning(location_error)
-                else:
-                    st.session_state["parent_last_location_time"] = captured_at
-                    st.success("Location received. Sharing stays on while this page remains open.")
-    else:
-        st.info("Check the box above to enable the Start location sharing button.")
     st.stop()
 
 # -------------------------------------------------------------
@@ -868,54 +727,6 @@ if app_mode == "🚀 Admin Dashboard":
                     "then refresh this page. If students are already registered, check the app's Supabase URL/key and "
                     "the `students` table permissions."
                 )
-
-            st.divider()
-            st.markdown("#### Parent phone locations")
-            st.caption("Map refreshes every 15 seconds. Locations older than two minutes are hidden.")
-            retention_cutoff = datetime.now(timezone.utc) - timedelta(hours=LOCATION_RETENTION_HOURS)
-            supabase.table("student_live_locations").delete().lt(
-                "captured_at", retention_cutoff.isoformat()
-            ).execute()
-
-            @st.fragment(run_every="15s")
-            def show_recent_locations():
-                cutoff = datetime.now(timezone.utc) - timedelta(seconds=LOCATION_FRESH_SECONDS)
-                rows = (
-                    supabase.table("student_live_locations")
-                    .select("student_id, latitude, longitude, accuracy_meters, captured_at")
-                    .gte("captured_at", cutoff.isoformat())
-                    .execute()
-                    .data
-                    or []
-                )
-                if not rows:
-                    st.info("No parent phones are sharing a recent location right now.")
-                    return
-                points = []
-                detail_rows = []
-                for row in rows:
-                    student_name = students_by_uuid.get(str(row["student_id"]), "Student")
-                    points.append(
-                        {
-                            "student": student_name,
-                            "latitude": float(row["latitude"]),
-                            "longitude": float(row["longitude"]),
-                            "accuracy_meters": round(float(row["accuracy_meters"])),
-                        }
-                    )
-                    captured = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00"))
-                    detail_rows.append(
-                        {
-                            "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
-                            "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                            "Coordinates": f"{float(row['latitude']):.6f}, {float(row['longitude']):.6f}",
-                            "Accuracy (m)": round(float(row["accuracy_meters"])),
-                        }
-                    )
-                render_location_map(points)
-                st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
-
-            show_recent_locations()
 
             st.divider()
             st.markdown("#### NFC scanner phone locations")
