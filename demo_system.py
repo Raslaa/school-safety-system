@@ -149,7 +149,7 @@ export default function(component) {
       lastSent = now;
       button.disabled = true;
       stopButton.style.display = 'inline-block';
-      show('🟢 Live sharing is on. Keep this page open; fresh browser updates are shared as they arrive.');
+      show(`🟢 Live sharing is on. Reported GPS accuracy: ±${Math.round(position.coords.accuracy)} m. Keep this page open for fresh fixes.`);
       setTriggerValue('position', {
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -161,7 +161,7 @@ export default function(component) {
         2:'This phone could not determine its location. Try again outdoors.',
         3:'The location request timed out. Please try again.'};
       stopWatch(messages[error.code] || 'Location is unavailable.');
-    }, {enableHighAccuracy:true, maximumAge:10000, timeout:30000});
+    }, {enableHighAccuracy:true, maximumAge:0, timeout:60000});
     stopButton.style.display = 'inline-block';
     stopButton.onclick = () => stopWatch('Sharing stopped.');
   };
