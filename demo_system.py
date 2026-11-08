@@ -77,14 +77,12 @@ export default function(component) {
 SCAN_GPS_HTML = """
 <div class="scan-location-action" style="border:3px solid #075E54;border-radius:14px;padding:20px;background:#EAF7F5;font-family:Georgia, 'Times New Roman', serif;">
   <button id="scan-gps-share" type="button" style="border:2px solid #064B44;border-radius:10px;padding:17px 24px;background:#075E54;color:#FFFFFF;font-family:Arial, Helvetica, sans-serif;font-size:21px;font-weight:800;letter-spacing:.02em;cursor:pointer;">
-    📍 Share this phone's location for this scan
     📍 Start live location sharing
   </button>
   <button id="scan-gps-stop" type="button" style="display:none;border:2px solid #075E54;border-radius:10px;padding:14px 20px;background:#FFFFFF;color:#075E54;font-family:Arial, Helvetica, sans-serif;font-size:18px;font-weight:800;cursor:pointer;">
     Stop sharing
   </button>
   <p id="scan-gps-status" aria-live="polite" style="margin:12px 0 0;color:#163B37;font-family:Georgia, 'Times New Roman', serif;font-size:15px;font-weight:600;line-height:1.5;">
-    Location will only be requested if you press the button.
     Location permission is requested only after you press Start.
   </p>
 </div>
@@ -144,8 +142,6 @@ export default function(component) {
     if (watchId !== null) return;
     button.disabled = true;
     show('Requesting permission for this phone’s location…');
-    navigator.geolocation.getCurrentPosition((position) => {
-      show('Location shared with the school for this scan.');
     watchId = navigator.geolocation.watchPosition((position) => {
       const now = Date.now();
       if (now - lastSent < 15000) return;
@@ -163,9 +159,6 @@ export default function(component) {
       const messages = {1:'Permission was denied. No location was shared.',
         2:'This phone could not determine its location. Try again outdoors.',
         3:'The location request timed out. Please try again.'};
-      show(messages[error.code] || 'Location is unavailable.');
-      button.disabled = false;
-    }, {enableHighAccuracy:true, maximumAge:0, timeout:30000});
       stopWatch(messages[error.code] || 'Location is unavailable.');
     }, {enableHighAccuracy:true, maximumAge:10000, timeout:30000});
     stopButton.style.display = 'inline-block';
@@ -360,12 +353,8 @@ if tag_token:
 
     st.divider()
     with st.container(border=True):
-        st.subheader("📍 Optional scan location")
         st.subheader("📍 Share this phone’s live location")
         st.write(
-            "If you choose to share, school admins and the student’s parent/guardian with an active private portal link "
-            "can see this phone’s location for up to 24 hours. It is not verified as the student’s location. "
-            "Your browser will ask for permission after you press the button."
             "Press Start and allow location access to share this phone’s live position with school admins and "
             "the student’s parent/guardian through their private portal link. Fresh browser updates are shared while "
             "this page stays open. Press Stop to end sharing. The last point may remain visible for up to 24 hours. "
@@ -412,7 +401,6 @@ if tag_token:
                         on_conflict="student_id",
                     ).execute()
                     st.session_state["last_saved_scan_location"] = scan_event
-                    st.success("This phone’s scan location was shared with the school and parent portal.")
                     st.success("Live location update shared with the school and parent portal.")
                 except Exception:
                     st.error("Could not save this phone’s scan location. No location was recorded.")
@@ -458,8 +446,6 @@ if share_token:
     with st.container(border=True):
         st.subheader("📍 Latest shared NFC scan location")
         st.caption(
-            "This is the scanner phone’s location, shared only after that person pressed the share button "
-            "and allowed browser access. It may not be the student’s location. Reports older than 24 hours are hidden."
             "This is the scanner phone’s location, shared only after that person pressed Start and allowed browser access. "
             "It may not be the student’s location. The portal refreshes every 15 seconds while open; reports older than 24 hours are hidden."
         )
@@ -470,7 +456,6 @@ if share_token:
             try:
                 scan_rows = (
                     supabase.table("student_tag_scan_locations")
-                    .select("latitude, longitude, accuracy_meters, captured_at")
                     .select("latitude, longitude, accuracy_meters, captured_at, sharing_active")
                     .eq("student_id", student_uuid)
                     .gte("captured_at", scan_cutoff.isoformat())
@@ -506,7 +491,6 @@ if share_token:
             st.map(pd.DataFrame(point), latitude="lat", longitude="lon")
             st.caption(
                 f"Reported {captured.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} · "
-                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m"
                 f"reported accuracy ±{round(float(scan['accuracy_meters']))} m · "
                 "browser location accuracy can vary"
             )
@@ -742,7 +726,6 @@ if app_mode == "🚀 Admin Dashboard":
                             st.code(build_app_url("share_token", raw_token))
                             st.caption(
                                 "Send this link privately to the parent. It allows them to share their phone location "
-                                "and view the latest opted-in NFC scan report for this student."
                                 "and view live or last-known opted-in NFC scanner-phone location for this student."
                             )
                     with disable_col:
@@ -801,11 +784,8 @@ if app_mode == "🚀 Admin Dashboard":
             show_recent_locations()
 
             st.divider()
-            st.markdown("#### NFC scan reports")
             st.markdown("#### NFC scanner phone locations")
             st.caption(
-                "These pins show the phone locations people explicitly shared when scanning a tag. "
-                "They are not verified child locations. Reports older than 24 hours are removed."
                 "These pins show phone locations people explicitly shared while scanning a tag. "
                 "A point is marked live only while updates are fresh; it is not verified child tracking. "
                 "Last known points older than 24 hours are removed."
@@ -821,7 +801,6 @@ if app_mode == "🚀 Admin Dashboard":
             def show_recent_tag_scans():
                 rows = (
                     supabase.table("student_tag_scan_locations")
-                    .select("student_id, latitude, longitude, accuracy_meters, captured_at")
                     .select("student_id, latitude, longitude, accuracy_meters, captured_at, sharing_active")
                     .gte("captured_at", scan_retention_cutoff.isoformat())
                     .execute()
@@ -844,7 +823,6 @@ if app_mode == "🚀 Admin Dashboard":
                         {
                             "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
                             "Status": "🟢 Live" if live_now else "Last known",
-                            "Scanned (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                             "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                             "Accuracy (m)": round(float(row["accuracy_meters"])),
                         }
