@@ -78,9 +78,22 @@ def init_supabase() -> Client:
     except Exception:
         settings = {}
     url = settings.get("url") or os.getenv("SUPABASE_URL")
-    key = settings.get("key") or os.getenv("SUPABASE_KEY")
+    # This Streamlit app talks to Supabase from its Python server. Prefer a
+    # server-only secret key (or legacy service_role key), never a publishable/
+    # anon key, because the app performs privileged admin and parent-link work.
+    key = (
+        settings.get("secret_key")
+        or settings.get("service_role_key")
+        or os.getenv("SUPABASE_SECRET_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or settings.get("key")
+        or os.getenv("SUPABASE_KEY")
+    )
     if not url or not key:
-        raise RuntimeError("Set Supabase url and key in Streamlit secrets or environment variables.")
+        raise RuntimeError(
+            "Set Supabase url and a server-side secret/service-role key in Streamlit secrets "
+            "or environment variables. Do not use the publishable/anon key for this app."
+        )
     return create_client(url, key)
 
 
