@@ -196,3 +196,4 @@ if app_mode == "🚀 Admin Dashboard":
                 st.caption("Showing demo coordinate simulation area for Hargeisa, Somalia:")
                 st.map(hargeisa_demo)
         except Exception as e:
+    st.error(f"Failed to load location logs: {e}")
