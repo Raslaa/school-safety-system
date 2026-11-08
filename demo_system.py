@@ -6,7 +6,6 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
 from supabase import create_client, Client
 
@@ -274,73 +273,31 @@ def valid_share(token: str):
     return result.data[0] if result.data else None
 
 
-def render_location_map(locations: list[dict], *, key: str) -> None:
-    """Render reported GPS coordinates on an interactive, zoomable map."""
+def render_location_map(locations: list[dict]) -> None:
+    """Render GPS points with a fixed street-level zoom for a single location."""
     if not locations:
         return
     frame = pd.DataFrame(locations)
     frame["latitude"] = frame["latitude"].astype(float)
     frame["longitude"] = frame["longitude"].astype(float)
-    center_lat = float(frame["latitude"].mean())
-    center_lon = float(frame["longitude"].mean())
     span = max(
         float(frame["latitude"].max() - frame["latitude"].min()),
         float(frame["longitude"].max() - frame["longitude"].min()),
     )
     if len(frame) == 1:
-        accuracy = max(float(frame.iloc[0].get("accuracy_meters", 50)), 1.0)
-        zoom = 19 if accuracy <= 10 else 18 if accuracy <= 25 else 17 if accuracy <= 60 else 16 if accuracy <= 150 else 14
+        zoom = 18  # Street-level view, centered on the one reported coordinate.
     else:
         zoom = 14 if span < 0.01 else 11 if span < 0.1 else 8
-    layers = []
-    if "accuracy_meters" in frame.columns:
-        # The shaded circle visualizes the device's stated GPS uncertainty.
-        layers.append(
-            pdk.Layer(
-                "ScatterplotLayer",
-                data=frame,
-                get_position="[longitude, latitude]",
-                get_radius="accuracy_meters",
-                radius_units="meters",
-                get_fill_color=[244, 153, 31, 35],
-                get_line_color=[196, 111, 0, 180],
-                line_width_min_pixels=2,
-                stroked=True,
-                filled=True,
-                pickable=False,
-            )
-        )
-    marker = pdk.Layer(
-        "ScatterplotLayer",
-        data=frame,
-        get_position="[longitude, latitude]",
-        get_radius=14,
-        radius_units="pixels",
-        get_fill_color=[14, 116, 96, 230],
-        get_line_color=[255, 255, 255, 255],
-        line_width_min_pixels=2,
-        stroked=True,
-        pickable=True,
-        auto_highlight=True,
+    st.map(
+        frame,
+        latitude="latitude",
+        longitude="longitude",
+        size="accuracy_meters" if "accuracy_meters" in frame.columns else 20,
+        color="#0e7460",
+        zoom=zoom,
+        height=600,
+        use_container_width=True,
     )
-    layers.append(marker)
-    deck = pdk.Deck(
-        layers=layers,
-        initial_view_state=pdk.ViewState(
-            latitude=center_lat,
-            longitude=center_lon,
-            zoom=zoom,
-            pitch=0,
-        ),
-        map_style=None,
-        tooltip={
-            "text": (
-                "{student}\nLatitude: {latitude}\nLongitude: {longitude}\n"
-                "Reported accuracy: ±{accuracy_meters} m"
-            )
-        },
-    )
-    st.pydeck_chart(deck, width="stretch", key=key, alt="Interactive map of reported phone locations")
 
 
 def save_current_location(student_id: str, point: dict) -> str | None:
@@ -580,7 +537,7 @@ if share_token:
             st.success("🟢 Scanner phone is sharing live location now.") if is_live else st.info(
                 "Showing the last known scanner phone location. It is no longer updating."
             )
-            render_location_map(point, key=f"parent_nfc_location_{student_uuid}")
+            render_location_map(point)
             maps_url = (
                 "https://www.google.com/maps/search/?api=1&query="
                 f"{float(scan['latitude']):.6f}%2C{float(scan['longitude']):.6f}"
@@ -589,8 +546,8 @@ if share_token:
             st.caption(
                 f"Reported {captured.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} · "
                 f"GPS coordinates {float(scan['latitude']):.6f}, {float(scan['longitude']):.6f} · "
-                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m. The shaded circle shows that "
-                "uncertainty area; zooming in cannot improve the phone’s GPS accuracy."
+                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m. The map circle size reflects "
+                "that reported accuracy; zooming in cannot improve the phone’s GPS accuracy."
             )
 
         show_parent_scan_report()
@@ -928,7 +885,7 @@ if app_mode == "🚀 Admin Dashboard":
                             "Accuracy (m)": round(float(row["accuracy_meters"])),
                         }
                     )
-                render_location_map(points, key="admin_parent_locations_map")
+                render_location_map(points)
                 st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
             show_recent_locations()
@@ -985,7 +942,7 @@ if app_mode == "🚀 Admin Dashboard":
                             "Accuracy (m)": round(float(row["accuracy_meters"])),
                         }
                     )
-                render_location_map(points, key="admin_nfc_locations_map")
+                render_location_map(points)
                 st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
             show_recent_tag_scans()
