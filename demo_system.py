@@ -1,5 +1,7 @@
 import os
+import base64
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -9,6 +11,7 @@ from supabase import create_client, Client
 
 LOCATION_FRESH_SECONDS = 120
 LOCATION_RETENTION_HOURS = 24
+SCAN_LOCATION_RETENTION_HOURS = 24
 
 GPS_HTML = """
 <div>
@@ -71,12 +74,116 @@ export default function(component) {
 }
 """
 
+SCAN_GPS_HTML = """
+<div class="scan-location-action" style="border:3px solid #075E54;border-radius:14px;padding:20px;background:#EAF7F5;font-family:Georgia, 'Times New Roman', serif;">
+  <button id="scan-gps-share" type="button" style="border:2px solid #064B44;border-radius:10px;padding:17px 24px;background:#075E54;color:#FFFFFF;font-family:Arial, Helvetica, sans-serif;font-size:21px;font-weight:800;letter-spacing:.02em;cursor:pointer;">
+    📍 Share this phone's location for this scan
+    📍 Start live location sharing
+  </button>
+  <button id="scan-gps-stop" type="button" style="display:none;border:2px solid #075E54;border-radius:10px;padding:14px 20px;background:#FFFFFF;color:#075E54;font-family:Arial, Helvetica, sans-serif;font-size:18px;font-weight:800;cursor:pointer;">
+    Stop sharing
+  </button>
+  <p id="scan-gps-status" aria-live="polite" style="margin:12px 0 0;color:#163B37;font-family:Georgia, 'Times New Roman', serif;font-size:15px;font-weight:600;line-height:1.5;">
+    Location will only be requested if you press the button.
+    Location permission is requested only after you press Start.
+  </p>
+</div>
+"""
+
+SCAN_GPS_CSS = """
+.scan-location-action {
+  border: 2px solid var(--st-primary-color);
+  border-radius: 12px;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--st-primary-color) 8%, var(--st-background-color));
+  font-family: Arial, Helvetica, sans-serif;
+}
+#scan-gps-share {
+  border: 2px solid var(--st-primary-color);
+  border-radius: 8px;
+  padding: .75rem 1rem;
+  background: var(--st-primary-color);
+  color: var(--st-background-color);
+  font: 700 1rem/1.35 Arial, Helvetica, sans-serif;
+  letter-spacing: .01em;
+  cursor: pointer;
+}
+#scan-gps-share:focus-visible {
+  outline: 3px solid var(--st-text-color);
+  outline-offset: 3px;
+}
+#scan-gps-share:disabled { opacity: .7; cursor: wait; }
+#scan-gps-share { border: 2px solid #064B44; background: #075E54; color: #FFFFFF; font-size: 21px; font-weight: 800; }
+#scan-gps-stop { margin-left: .5rem; }
+#scan-gps-status {
+  margin: .75rem 0 0;
+  font: 500 .9rem/1.45 Arial, Helvetica, sans-serif;
+  color: var(--st-text-color);
+}
+"""
+
+SCAN_GPS_JS = """
+export default function(component) {
+  const { parentElement, setStateValue, setTriggerValue } = component;
+  const button = parentElement.querySelector('#scan-gps-share');
+  const stopButton = parentElement.querySelector('#scan-gps-stop');
+  const status = parentElement.querySelector('#scan-gps-status');
+  let watchId = null;
+  let lastSent = 0;
+  function show(message) { status.textContent = message; setStateValue('status', message); }
+  function stopWatch(message, notifyServer = true) {
+    if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    button.disabled = false;
+    stopButton.style.display = 'none';
+    show(message);
+    if (notifyServer) setTriggerValue('stop', Date.now());
+  }
+  button.onclick = () => {
+    if (!navigator.geolocation) { show('This browser does not support location sharing.'); return; }
+    if (watchId !== null) return;
+    button.disabled = true;
+    show('Requesting permission for this phone’s location…');
+    navigator.geolocation.getCurrentPosition((position) => {
+      show('Location shared with the school for this scan.');
+    watchId = navigator.geolocation.watchPosition((position) => {
+      const now = Date.now();
+      if (now - lastSent < 15000) return;
+      lastSent = now;
+      button.disabled = true;
+      stopButton.style.display = 'inline-block';
+      show('🟢 Live sharing is on. Keep this page open; fresh browser updates are shared as they arrive.');
+      setTriggerValue('position', {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        captured_at: new Date(position.timestamp).toISOString()
+      });
+    }, (error) => {
+      const messages = {1:'Permission was denied. No location was shared.',
+        2:'This phone could not determine its location. Try again outdoors.',
+        3:'The location request timed out. Please try again.'};
+      show(messages[error.code] || 'Location is unavailable.');
+      button.disabled = false;
+    }, {enableHighAccuracy:true, maximumAge:0, timeout:30000});
+      stopWatch(messages[error.code] || 'Location is unavailable.');
+    }, {enableHighAccuracy:true, maximumAge:10000, timeout:30000});
+    stopButton.style.display = 'inline-block';
+    stopButton.onclick = () => stopWatch('Sharing stopped.');
+  };
+  return () => { if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId); };
+}
+"""
+
 # Initialize Database securely from secrets.toml
 def init_supabase() -> Client:
     try:
         settings = st.secrets.get("supabase", {})
     except Exception:
-        settings = {}
+        st.error(
+            "Could not read Streamlit Secrets. Check Manage app → Settings → Secrets for valid TOML formatting."
+        )
+        st.stop()
     url = settings.get("url") or os.getenv("SUPABASE_URL")
     # This Streamlit app talks to Supabase from its Python server. Prefer a
     # server-only secret key (or legacy service_role key), never a publishable/
@@ -86,14 +193,41 @@ def init_supabase() -> Client:
         or settings.get("service_role_key")
         or os.getenv("SUPABASE_SECRET_KEY")
         or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or settings.get("key")
-        or os.getenv("SUPABASE_KEY")
     )
-    if not url or not key:
-        raise RuntimeError(
-            "Set Supabase url and a server-side secret/service-role key in Streamlit secrets "
-            "or environment variables. Do not use the publishable/anon key for this app."
+    if not url:
+        st.error(
+            "Supabase URL is missing. In Streamlit Secrets, add `url = \"https://YOUR_PROJECT.supabase.co\"` inside `[supabase]`."
         )
+        st.stop()
+    if not key:
+        st.error(
+            "Supabase server key is missing. Add `[supabase].secret_key` (new `sb_secret_...` key) "
+            "or `[supabase].service_role_key` (legacy service_role key). A generic `key` or publishable/anon key is not accepted."
+        )
+        st.stop()
+    # Catch the most common copy/paste mistake before the first database query.
+    # Legacy API keys are JWTs; inspecting the role claim here does not validate
+    # the token, it only prevents knowingly configuring the public anon key.
+    if str(key).startswith("sb_publishable_"):
+        st.error(
+            "The configured Supabase key is a publishable key. Replace it with the "
+            "project's Secret key (sb_secret_...) or legacy service_role key in Streamlit Secrets."
+        )
+        st.stop()
+    token_parts = str(key).split(".")
+    legacy_role = None
+    if len(token_parts) == 3:
+        try:
+            payload = token_parts[1] + "=" * (-len(token_parts[1]) % 4)
+            legacy_role = json.loads(base64.urlsafe_b64decode(payload)).get("role")
+        except Exception:
+            pass
+    if legacy_role == "anon":
+        st.error(
+            "The configured Supabase key is the legacy anon key. Replace it with the "
+            "legacy service_role key or the newer Secret key in Streamlit Secrets."
+        )
+        st.stop()
     return create_client(url, key)
 
 
@@ -223,6 +357,75 @@ if tag_token:
             if phone:
                 clean_phone = "".join(ch for ch in str(phone) if ch.isdigit() or ch == "+")
                 st.link_button(f"📞 Call {g.get('full_name') or 'Guardian'}", f"tel:{clean_phone}")
+
+    st.divider()
+    with st.container(border=True):
+        st.subheader("📍 Optional scan location")
+        st.subheader("📍 Share this phone’s live location")
+        st.write(
+            "If you choose to share, school admins and the student’s parent/guardian with an active private portal link "
+            "can see this phone’s location for up to 24 hours. It is not verified as the student’s location. "
+            "Your browser will ask for permission after you press the button."
+            "Press Start and allow location access to share this phone’s live position with school admins and "
+            "the student’s parent/guardian through their private portal link. Fresh browser updates are shared while "
+            "this page stays open. Press Stop to end sharing. The last point may remain visible for up to 24 hours. "
+            "This is the scanner’s phone location, not verified student tracking; accuracy depends on the device."
+        )
+        scan_location_component = st.components.v2.component(
+            "nfc_scan_location_sharing",
+            html=SCAN_GPS_HTML,
+            css=SCAN_GPS_CSS,
+            js=SCAN_GPS_JS,
+        )
+        scan_result = scan_location_component(
+            key=f"scan_location_{tag_token}",
+            on_position_change=lambda: None,
+            on_status_change=lambda: None,
+            on_stop_change=lambda: None,
+        )
+        scan_point = getattr(scan_result, "position", None)
+        if isinstance(scan_point, dict) and scan_point.get("captured_at"):
+            scan_event = f"{tag_token}:{scan_point['captured_at']}"
+            if st.session_state.get("last_saved_scan_location") != scan_event:
+                try:
+                    latitude = float(scan_point["latitude"])
+                    longitude = float(scan_point["longitude"])
+                    accuracy = float(scan_point["accuracy"])
+                    captured = datetime.fromisoformat(
+                        str(scan_point["captured_at"]).replace("Z", "+00:00")
+                    )
+                    if captured.tzinfo is None:
+                        captured = captured.replace(tzinfo=timezone.utc)
+                    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                        raise ValueError("Invalid coordinates returned by the browser.")
+                    if not (0 <= accuracy <= 10000):
+                        raise ValueError("Invalid GPS accuracy returned by the browser.")
+                    supabase.table("student_tag_scan_locations").upsert(
+                        {
+                            "student_id": student_uuid,
+                            "latitude": latitude,
+                            "longitude": longitude,
+                            "accuracy_meters": accuracy,
+                            "captured_at": captured.astimezone(timezone.utc).isoformat(),
+                            "sharing_active": True,
+                        },
+                        on_conflict="student_id",
+                    ).execute()
+                    st.session_state["last_saved_scan_location"] = scan_event
+                    st.success("This phone’s scan location was shared with the school and parent portal.")
+                    st.success("Live location update shared with the school and parent portal.")
+                except Exception:
+                    st.error("Could not save this phone’s scan location. No location was recorded.")
+        stop_event = getattr(scan_result, "stop", None)
+        if stop_event and st.session_state.get(f"last_scan_stop_{tag_token}") != stop_event:
+            try:
+                supabase.table("student_tag_scan_locations").update({"sharing_active": False}).eq(
+                    "student_id", student_uuid
+                ).execute()
+                st.session_state[f"last_scan_stop_{tag_token}"] = stop_event
+                st.info("Live sharing has stopped. The last shared point remains visible for up to 24 hours.")
+            except Exception:
+                st.error("Sharing stopped on this phone, but the portal may label the last point stale after two minutes.")
     st.stop()
 
 
@@ -252,6 +455,64 @@ if share_token:
 
     st.title("👨‍👩‍👦 Parent Location Portal")
     st.caption("Proximind Safety Hub")
+    with st.container(border=True):
+        st.subheader("📍 Latest shared NFC scan location")
+        st.caption(
+            "This is the scanner phone’s location, shared only after that person pressed the share button "
+            "and allowed browser access. It may not be the student’s location. Reports older than 24 hours are hidden."
+            "This is the scanner phone’s location, shared only after that person pressed Start and allowed browser access. "
+            "It may not be the student’s location. The portal refreshes every 15 seconds while open; reports older than 24 hours are hidden."
+        )
+
+        @st.fragment(run_every="15s")
+        def show_parent_scan_report():
+            scan_cutoff = datetime.now(timezone.utc) - timedelta(hours=SCAN_LOCATION_RETENTION_HOURS)
+            try:
+                scan_rows = (
+                    supabase.table("student_tag_scan_locations")
+                    .select("latitude, longitude, accuracy_meters, captured_at")
+                    .select("latitude, longitude, accuracy_meters, captured_at, sharing_active")
+                    .eq("student_id", student_uuid)
+                    .gte("captured_at", scan_cutoff.isoformat())
+                    .order("captured_at", desc=True)
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+            except Exception:
+                st.info("NFC scan reports are not available yet. The school may need to apply the latest database setup script.")
+                return
+            if not scan_rows:
+                st.info("No opted-in NFC scan location has been shared in the last 24 hours.")
+                return
+            scan = scan_rows[0]
+            report_key = f"parent_last_seen_nfc_scan_{student_uuid}"
+            previous_report = st.session_state.get(report_key)
+            current_report = str(scan["captured_at"])
+            if previous_report != current_report:
+                if previous_report is not None:
+                    st.success("New opted-in NFC scan location received.")
+                st.session_state[report_key] = current_report
+            point = [{"lat": float(scan["latitude"]), "lon": float(scan["longitude"])}]
+            captured = datetime.fromisoformat(str(scan["captured_at"]).replace("Z", "+00:00"))
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - captured.astimezone(timezone.utc)).total_seconds()
+            is_live = bool(scan.get("sharing_active")) and 0 <= age_seconds <= LOCATION_FRESH_SECONDS
+            st.success("🟢 Scanner phone is sharing live location now.") if is_live else st.info(
+                "Showing the last known scanner phone location. It is no longer updating."
+            )
+            st.map(pd.DataFrame(point), latitude="lat", longitude="lon")
+            st.caption(
+                f"Reported {captured.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m"
+                f"reported accuracy ±{round(float(scan['accuracy_meters']))} m · "
+                "browser location accuracy can vary"
+            )
+
+        show_parent_scan_report()
+
     with st.container(border=True):
         st.subheader(f"Share location for {student.get('full_name') or 'this student'}")
         st.write(
@@ -479,7 +740,11 @@ if app_mode == "🚀 Admin Dashboard":
                             ).execute()
                             st.success("New parent link created. Any previous link for this student is now invalid.")
                             st.code(build_app_url("share_token", raw_token))
-                            st.caption("Send this link privately to the parent. It can submit a location but cannot view it.")
+                            st.caption(
+                                "Send this link privately to the parent. It allows them to share their phone location "
+                                "and view the latest opted-in NFC scan report for this student."
+                                "and view live or last-known opted-in NFC scanner-phone location for this student."
+                            )
                     with disable_col:
                         if st.button("Disable Parent Sharing Link"):
                             supabase.table("student_location_shares").update({"enabled": False}).eq(
@@ -497,7 +762,7 @@ if app_mode == "🚀 Admin Dashboard":
                 )
 
             st.divider()
-            st.markdown("#### Recent locations")
+            st.markdown("#### Parent phone locations")
             st.caption("Map refreshes every 15 seconds. Locations older than two minutes are hidden.")
             retention_cutoff = datetime.now(timezone.utc) - timedelta(hours=LOCATION_RETENTION_HOURS)
             supabase.table("student_live_locations").delete().lt(
@@ -534,5 +799,59 @@ if app_mode == "🚀 Admin Dashboard":
                 st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
 
             show_recent_locations()
+
+            st.divider()
+            st.markdown("#### NFC scan reports")
+            st.markdown("#### NFC scanner phone locations")
+            st.caption(
+                "These pins show the phone locations people explicitly shared when scanning a tag. "
+                "They are not verified child locations. Reports older than 24 hours are removed."
+                "These pins show phone locations people explicitly shared while scanning a tag. "
+                "A point is marked live only while updates are fresh; it is not verified child tracking. "
+                "Last known points older than 24 hours are removed."
+            )
+            scan_retention_cutoff = datetime.now(timezone.utc) - timedelta(
+                hours=SCAN_LOCATION_RETENTION_HOURS
+            )
+            supabase.table("student_tag_scan_locations").delete().lt(
+                "captured_at", scan_retention_cutoff.isoformat()
+            ).execute()
+
+            @st.fragment(run_every="15s")
+            def show_recent_tag_scans():
+                rows = (
+                    supabase.table("student_tag_scan_locations")
+                    .select("student_id, latitude, longitude, accuracy_meters, captured_at")
+                    .select("student_id, latitude, longitude, accuracy_meters, captured_at, sharing_active")
+                    .gte("captured_at", scan_retention_cutoff.isoformat())
+                    .execute()
+                    .data
+                    or []
+                )
+                if not rows:
+                    st.info("No NFC scan locations have been shared in the last 24 hours.")
+                    return
+                points = []
+                detail_rows = []
+                for row in rows:
+                    points.append({"lat": float(row["latitude"]), "lon": float(row["longitude"])})
+                    captured = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00"))
+                    if captured.tzinfo is None:
+                        captured = captured.replace(tzinfo=timezone.utc)
+                    age_seconds = (datetime.now(timezone.utc) - captured.astimezone(timezone.utc)).total_seconds()
+                    live_now = bool(row.get("sharing_active")) and 0 <= age_seconds <= LOCATION_FRESH_SECONDS
+                    detail_rows.append(
+                        {
+                            "Student": students_by_uuid.get(str(row["student_id"]), "Student"),
+                            "Status": "🟢 Live" if live_now else "Last known",
+                            "Scanned (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "Updated (UTC)": captured.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            "Accuracy (m)": round(float(row["accuracy_meters"])),
+                        }
+                    )
+                st.map(pd.DataFrame(points), latitude="lat", longitude="lon")
+                st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+
+            show_recent_tag_scans()
         except Exception as e:
             st.error(f"Could not load GPS sharing data: {e}")
