@@ -261,7 +261,7 @@ if tag_token:
             st.stop()
         tag_data = tag_rows[0]
         if (tag_data.get("status") or "").lower() not in {"active", "enabled"}:
-            st.error("🚨 Access Refused: This safety tag has been frozen or reported lost.")
+            st.error("🚨 Access Refused: This safety tag is inactive or has been reported lost. Please contact the school.")
             st.stop()
             
         student_uuid = tag_data["student_id"]
@@ -467,6 +467,58 @@ if share_token:
 
         show_parent_scan_report()
 
+    with st.container(border=True):
+        st.subheader("🔒 NFC tag safety controls")
+        st.caption(
+            "You can immediately disable an active tag assigned to your child. Once disabled, "
+            "its NFC link will no longer show the safety profile."
+        )
+        try:
+            parent_tags = (
+                supabase.table("nfc_tags")
+                .select("public_token, status")
+                .eq("student_id", student_uuid)
+                .execute()
+                .data
+                or []
+            )
+            active_parent_tags = [
+                row for row in parent_tags
+                if (row.get("status") or "").lower() in {"active", "enabled"}
+                and row.get("public_token")
+            ]
+            if not active_parent_tags:
+                st.info("There are no active NFC tags for this student to terminate.")
+            else:
+                tag_labels = [
+                    f"Active tag ending …{str(row['public_token'])[-6:]}"
+                    for row in active_parent_tags
+                ]
+                tag_index = st.selectbox(
+                    "Choose the NFC tag to disable",
+                    range(len(active_parent_tags)),
+                    format_func=lambda index: tag_labels[index],
+                    key=f"parent_tag_to_terminate_{student_uuid}",
+                )
+                confirm_termination = st.checkbox(
+                    "I understand this will stop this tag’s link from opening the student profile.",
+                    key=f"confirm_parent_tag_termination_{student_uuid}",
+                )
+                if st.button(
+                    "🚫 Terminate selected NFC tag",
+                    type="primary",
+                    disabled=not confirm_termination,
+                    key=f"terminate_parent_nfc_tag_{student_uuid}",
+                ):
+                    token_to_terminate = active_parent_tags[tag_index]["public_token"]
+                    supabase.table("nfc_tags").update({"status": "lost"}).eq(
+                        "student_id", student_uuid
+                    ).eq("public_token", token_to_terminate).execute()
+                    st.success("NFC tag disabled. Scans of this tag will now be refused.")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Could not load or disable NFC tags: {e}")
+
     st.stop()
 
 # -------------------------------------------------------------
@@ -574,27 +626,96 @@ if app_mode == "🚀 Admin Dashboard":
 
     with admin_tabs[2]:
         st.subheader("Configure Physical NFC Tokens")
+        st.caption(
+            "Report a missing tag to block its current link. Replacing a tag creates a new link; "
+            "the old NFC chip cannot be erased remotely."
+        )
         try:
-            students_list = supabase.table("students").select("id, full_name, student_id").execute().data
+            students_list = supabase.table("students").select("id, full_name, student_id").execute().data or []
             if students_list:
                 student_options = {f"{s['full_name']} ({s['student_id']})": s["id"] for s in students_list}
                 selected_child_name = st.selectbox("Select Student to Bind to Tag:", list(student_options.keys()))
                 selected_uuid = student_options[selected_child_name]
-                
-                if st.button("GENERATE NEW SECURE NFC TOKEN"):
-                    try:
-                        tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
-                        hex_token = tag_res.data[0]["public_token"]
-                        final_nfc_link = build_app_url("tag_token", hex_token)
-                        st.success("🔒 Secure Security Hex Key Generated Successfully!")
-                        st.code(final_nfc_link)
-                    except Exception as e:
-                        existing_tag = supabase.table("nfc_tags").select("public_token").eq("student_id", selected_uuid).execute()
-                        if existing_tag.data:
-                            hex_token = existing_tag.data[0]["public_token"]
-                            fixed_link = build_app_url("tag_token", hex_token)
-                            st.warning("🔄 Token already initialized. Existing link:")
-                            st.code(fixed_link)
+
+                student_tags = (
+                    supabase.table("nfc_tags")
+                    .select("public_token, status")
+                    .eq("student_id", selected_uuid)
+                    .execute()
+                    .data
+                    or []
+                )
+
+                selected_tag = None
+                if student_tags:
+                    tag_labels = [
+                        f"{(tag.get('status') or 'unknown').title()} · …{str(tag.get('public_token') or '')[-6:]}"
+                        for tag in student_tags
+                    ]
+                    selected_tag = student_tags[
+                        st.selectbox("Existing tag", range(len(student_tags)), format_func=lambda i: tag_labels[i])
+                    ]
+                    selected_token = selected_tag.get("public_token")
+                    selected_status = (selected_tag.get("status") or "").lower()
+
+                    if selected_status in {"active", "enabled"} and selected_token:
+                        st.caption("Current tag is active. Its URL opens this student's safety profile.")
+                        st.code(build_app_url("tag_token", selected_token))
+                        if st.button("🚫 Report this tag lost / terminate it", type="secondary"):
+                            try:
+                                supabase.table("nfc_tags").update({"status": "lost"}).eq(
+                                    "public_token", selected_token
+                                ).execute()
+                                st.success("Tag terminated. Scans of its current URL will now be refused.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not terminate this tag: {e}")
+                    else:
+                        st.warning("This tag is inactive. Its current NFC URL should be refused by the profile page.")
+
+                    if st.button("🔁 Generate replacement NFC tag link"):
+                        replacement_token = secrets.token_urlsafe(32)
+                        try:
+                            # Insert first so schemas that allow multiple tags keep the old tag's lost record.
+                            try:
+                                supabase.table("nfc_tags").insert({
+                                    "student_id": selected_uuid,
+                                    "public_token": replacement_token,
+                                    "status": "active",
+                                }).execute()
+                            except Exception:
+                                # Some installations enforce one tag row per student. Re-key that row;
+                                # the old physical tag URL then no longer matches any database row.
+                                if not selected_token:
+                                    raise
+                                supabase.table("nfc_tags").update({
+                                    "public_token": replacement_token,
+                                    "status": "active",
+                                }).eq("public_token", selected_token).execute()
+                            else:
+                                if selected_token:
+                                    supabase.table("nfc_tags").update({"status": "lost"}).eq(
+                                        "public_token", selected_token
+                                    ).execute()
+
+                            st.success("Replacement link created. Write this new link to the replacement NFC tag.")
+                            st.code(build_app_url("tag_token", replacement_token))
+                        except Exception as e:
+                            st.error(f"Could not create a replacement tag: {e}")
+                else:
+                    st.info("No NFC tag is assigned to this student yet.")
+                    if st.button("🔐 Generate first secure NFC tag link"):
+                        new_token = secrets.token_urlsafe(32)
+                        try:
+                            supabase.table("nfc_tags").insert({
+                                "student_id": selected_uuid,
+                                "public_token": new_token,
+                                "status": "active",
+                            }).execute()
+                            st.success("Secure NFC link created. Write this link to the tag.")
+                            st.code(build_app_url("tag_token", new_token))
+                        except Exception as e:
+                            st.error(f"Could not create an NFC tag: {e}")
             else:
                 st.info("No students registered yet.")
         except Exception as e:
