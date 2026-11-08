@@ -247,10 +247,26 @@ def token_hash(token: str) -> str:
 
 
 def valid_share(token: str):
+    hashed_token = token_hash(token)
+    # New links are unique per guardian and child. Keep old student-wide links
+    # valid during migration so existing parents do not lose access at once.
+    try:
+        result = (
+            supabase.table("student_parent_portal_links")
+            .select("student_id, guardian_name")
+            .eq("token_hash", hashed_token)
+            .eq("enabled", True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+    except Exception:
+        pass
     result = (
         supabase.table("student_location_shares")
         .select("student_id")
-        .eq("token_hash", token_hash(token))
+        .eq("token_hash", hashed_token)
         .eq("enabled", True)
         .limit(1)
         .execute()
@@ -488,8 +504,9 @@ if share_token:
         st.stop()
     student = student_res.data[0]
 
-    st.title("👨‍👩‍👦 Parent Location Portal")
-    st.caption("Proximind Safety Hub")
+    parent_name = str(share.get("guardian_name") or "Parent")
+    st.title(f"👨‍👩‍👦 {parent_name}’s Parent Portal")
+    st.caption(f"Private location portal for {student.get('full_name') or 'your child'} · Proximind Safety Hub")
     with st.container(border=True):
         st.subheader("📍 Latest shared NFC scan location")
         st.caption(
@@ -763,33 +780,76 @@ if app_mode == "🚀 Admin Dashboard":
                     )
                     selected_student_id = student_rows[selected_index]["id"]
                     st.caption(f"{len(student_rows)} student(s) available.")
-                    create_col, disable_col = st.columns(2)
-                    with create_col:
-                        if st.button("Create / Reset Parent Sharing Link", type="primary"):
-                            raw_token = secrets.token_urlsafe(32)
-                            supabase.table("student_location_shares").upsert(
-                                {
-                                    "student_id": selected_student_id,
-                                    "token_hash": token_hash(raw_token),
-                                    "enabled": True,
-                                },
-                                on_conflict="student_id",
-                            ).execute()
-                            st.success("New parent link created. Any previous link for this student is now invalid.")
-                            st.code(build_app_url("share_token", raw_token))
-                            st.caption(
-                                "Send this link privately to the parent. It allows them to share their phone location "
-                                "and view live or last-known opted-in NFC scanner-phone location for this student."
-                            )
-                    with disable_col:
-                        if st.button("Disable Parent Sharing Link"):
-                            supabase.table("student_location_shares").update({"enabled": False}).eq(
-                                "student_id", selected_student_id
-                            ).execute()
-                            supabase.table("student_live_locations").delete().eq(
-                                "student_id", selected_student_id
-                            ).execute()
-                            st.success("Parent link disabled and latest location removed.")
+                    try:
+                        guardian_rows = (
+                            supabase.table("guardians")
+                            .select("*")
+                            .eq("student_id", selected_student_id)
+                            .execute()
+                            .data
+                            or []
+                        )
+                    except Exception as guardian_error:
+                        guardian_rows = []
+                        st.error(f"Could not load this student's guardians: {guardian_error}")
+
+                    if guardian_rows:
+                        guardian_labels = []
+                        guardian_keys = []
+                        for guardian in guardian_rows:
+                            label = str(guardian.get("full_name") or "Guardian")
+                            if guardian.get("relationship"):
+                                label += f" · {guardian['relationship']}"
+                            if guardian.get("phone"):
+                                label += f" · {guardian['phone']}"
+                            identity = str(guardian.get("id") or guardian.get("phone") or label)
+                            guardian_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                            guardian_labels.append(f"{label} · {guardian_key[:8]}")
+                            guardian_keys.append(guardian_key)
+
+                        guardian_index = st.selectbox(
+                            "Choose the parent/guardian for this private portal link",
+                            range(len(guardian_rows)),
+                            format_func=lambda index: guardian_labels[index],
+                            key=f"portal_guardian_{selected_student_id}",
+                        )
+                        selected_guardian = guardian_rows[guardian_index]
+                        selected_guardian_key = guardian_keys[guardian_index]
+                        create_col, disable_col = st.columns(2)
+                        with create_col:
+                            if st.button(
+                                "Create / Reset This Guardian’s Link",
+                                type="primary",
+                                key=f"create_guardian_link_{selected_student_id}_{selected_guardian_key[:8]}",
+                            ):
+                                raw_token = secrets.token_urlsafe(32)
+                                supabase.table("student_parent_portal_links").upsert(
+                                    {
+                                        "student_id": selected_student_id,
+                                        "guardian_key": selected_guardian_key,
+                                        "guardian_name": selected_guardian.get("full_name") or "Parent",
+                                        "token_hash": token_hash(raw_token),
+                                        "enabled": True,
+                                    },
+                                    on_conflict="student_id,guardian_key",
+                                ).execute()
+                                st.success("Private link ready for this parent. Resetting it invalidated their previous link.")
+                                st.code(build_app_url("share_token", raw_token))
+                                st.caption(
+                                    "Send this URL privately to this guardian. It opens this child’s portal, "
+                                    "including opted-in NFC scanner-phone location updates."
+                                )
+                        with disable_col:
+                            if st.button(
+                                "Revoke This Guardian’s Link",
+                                key=f"revoke_guardian_link_{selected_student_id}_{selected_guardian_key[:8]}",
+                            ):
+                                supabase.table("student_parent_portal_links").update({"enabled": False}).eq(
+                                    "student_id", selected_student_id
+                                ).eq("guardian_key", selected_guardian_key).execute()
+                                st.success("This guardian’s private portal link has been revoked.")
+                    else:
+                        st.info("No guardian contacts are saved for this student yet. Add a guardian in Student Directory first.")
             else:
                 st.info(
                     "No student records were returned from Supabase. Add students in the Student Directory / Register tab, "
