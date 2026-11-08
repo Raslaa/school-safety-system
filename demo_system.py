@@ -25,7 +25,7 @@ if tag_token:
             st.error("🚨 Access Refused: Invalid token code.")
             st.stop()
             
-        tag_data = tag_res.data[0]
+        tag_data = tag_res.data
         if tag_data["status"] != "active":
             st.error("🚨 Access Refused: This safety tag has been frozen or reported lost.")
             st.stop()
@@ -50,7 +50,7 @@ if tag_token:
         st.error("🚨 System Profile Error: Enrolled child credentials not found.")
         st.stop()
 
-    child = child_res.data[0]
+    child = child_res.data
     guardians = guardian_res.data
 
     # Request browser GPS coordinates via lightweight automated HTML injection script
@@ -93,9 +93,9 @@ if tag_token:
             st.markdown(f'<a href="tel:{clean_phone}" target="_top" style="display:inline-block;width:100%;max-width:300px;text-align:center;padding:12px 0px;font-size:15px;font-weight:bold;border-radius:8px;text-decoration:none;margin-bottom:15px;background-color:#2ecc71;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">📞 CALL {g["full_name"].upper()}</a>', unsafe_allow_html=True)
     st.stop()
 
-# =============================================================
-# 📱 STANDARD ENTRY Fallback (ADMIN & PARENT VIEW)
-# =============================================================
+# -------------------------------------------------------------
+# BACKUP DEMO FALLBACK (IF NO TOKEN IS PRESENT)
+# -------------------------------------------------------------
 st.sidebar.title("🛡️ Proximind Safety Hub")
 app_mode = st.sidebar.radio("Navigation View Portal:", ["🚀 Admin Dashboard", "👨‍👩‍👦 Parent Portal Gateway"])
 
@@ -104,7 +104,7 @@ if app_mode == "🚀 Admin Dashboard":
     st.title("🔑 Administrative Control Panel (DEMO)")
     admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags", "📍 Live Scan Map"])
 
-    with admin_tabs[0]:
+    with admin_tabs:
         st.subheader("Student Database Manifest")
         try:
             students_res = supabase.table("students").select("*").execute().data
@@ -115,7 +115,7 @@ if app_mode == "🚀 Admin Dashboard":
         except Exception as e:
             st.error(f"Database read failure: {str(e)}")
 
-    with admin_tabs[1]:
+    with admin_tabs:
         st.subheader("Enroll New Student Identity")
         with st.form("new_student_form", clear_on_submit=True):
             s_id = st.text_input("School Registration ID (e.g. AUS-2026-001):")
@@ -142,7 +142,7 @@ if app_mode == "🚀 Admin Dashboard":
                             "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
                         }
                         inserted_student = supabase.table("students").insert(student_payload).execute()
-                        new_student_uuid = inserted_student.data[0]["id"]
+                        new_student_uuid = inserted_student.data["id"]
                         
                         guardian_payload = {
                             "student_id": new_student_uuid, "full_name": g_name,
@@ -153,7 +153,7 @@ if app_mode == "🚀 Admin Dashboard":
                     except Exception as e:
                         st.error(f"Failed to submit: {str(e)}")
 
-    with admin_tabs[2]:
+    with admin_tabs:
         st.subheader("Configure Physical NFC Tokens")
         try:
             students_list = supabase.table("students").select("id, full_name, student_id").execute().data
@@ -165,14 +165,14 @@ if app_mode == "🚀 Admin Dashboard":
                 if st.button("GENERATE NEW SECURE NFC TOKEN"):
                     try:
                         tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
-                        hex_token = tag_res.data[0]["public_token"]
+                        hex_token = tag_res.data["public_token"]
                         final_nfc_link = f"https://streamlit.app{hex_token}"
                         st.success("🔒 Secure Security Hex Key Generated Successfully!")
                         st.code(final_nfc_link)
                     except Exception as e:
                         existing_tag = supabase.table("nfc_tags").select("public_token").eq("student_id", selected_uuid).execute()
                         if existing_tag.data:
-                            hex_token = existing_tag.data[0]["public_token"]
+                            hex_token = existing_tag.data["public_token"]
                             fixed_link = f"https://streamlit.app{hex_token}"
                             st.warning("🔄 Token already initialized. Existing link:")
                             st.code(fixed_link)
@@ -181,7 +181,7 @@ if app_mode == "🚀 Admin Dashboard":
         except Exception as e:
             st.error(f"Failed to query records: {str(e)}")
 
-    with admin_tabs[3]:
+    with admin_tabs:
         st.subheader("📍 Live Location Tracking Logs")
         try:
             logs_res = supabase.table("scan_logs").select("latitude, longitude").execute().data
