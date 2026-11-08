@@ -1,11 +1,37 @@
 import os
+from urllib.parse import urlencode
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 
 # Initialize Database securely from secrets.toml
 def init_supabase() -> Client:
-    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
+    try:
+        settings = st.secrets.get("supabase", {})
+    except Exception:
+        settings = {}
+    url = settings.get("url") or os.getenv("SUPABASE_URL")
+    key = settings.get("key") or os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Set Supabase url and key in Streamlit secrets or environment variables.")
+    return create_client(url, key)
+
+
+def build_app_url(parameter: str, value: str) -> str:
+    """Build a link to this Streamlit app with one query parameter."""
+    try:
+        base_url = st.secrets.get("public_app_url")
+    except Exception:
+        base_url = None
+    base_url = base_url or os.getenv("PUBLIC_APP_URL")
+    if not base_url:
+        try:
+            base_url = st.context.url
+        except Exception:
+            base_url = None
+    if not base_url:
+        raise ValueError("Set public_app_url or PUBLIC_APP_URL to the deployed Streamlit URL.")
+    return f"{str(base_url).split('?', 1)[0].rstrip('/')}?{urlencode({parameter: value})}"
 
 supabase = init_supabase()
 
@@ -25,8 +51,12 @@ if tag_token:
             st.error("🚨 Access Refused: Invalid token code.")
             st.stop()
             
-        tag_data = tag_res.data
-        if tag_data["status"] != "active":
+        tag_rows = tag_res.data or []
+        if not tag_rows:
+            st.error("🚨 Access Refused: Invalid token code.")
+            st.stop()
+        tag_data = tag_rows[0]
+        if (tag_data.get("status") or "").lower() not in {"active", "enabled"}:
             st.error("🚨 Access Refused: This safety tag has been frozen or reported lost.")
             st.stop()
             
@@ -50,8 +80,8 @@ if tag_token:
         st.error("🚨 System Profile Error: Enrolled child credentials not found.")
         st.stop()
 
-    child = child_res.data
-    guardians = guardian_res.data
+    child = child_res.data[0]
+    guardians = guardian_res.data or []
 
     # Request browser GPS coordinates via lightweight automated HTML injection script
     if not browser_lat or not browser_lon:
@@ -89,8 +119,10 @@ if tag_token:
             role_label = f" ({g['relationship']})" if g.get("relationship") else ""
             primary_badge = "⭐ PRIMARY GUARDIAN: " if g.get("is_primary") else ""
             st.write(f"**{primary_badge}{g['full_name']}**{role_label}")
-            clean_phone = str(g["phone"]).replace(" ", "")
-            st.markdown(f'<a href="tel:{clean_phone}" target="_top" style="display:inline-block;width:100%;max-width:300px;text-align:center;padding:12px 0px;font-size:15px;font-weight:bold;border-radius:8px;text-decoration:none;margin-bottom:15px;background-color:#2ecc71;color:white;box-shadow:0px 4px 6px rgba(0,0,0,0.1);">📞 CALL {g["full_name"].upper()}</a>', unsafe_allow_html=True)
+            phone = g.get("phone")
+            if phone:
+                clean_phone = "".join(ch for ch in str(phone) if ch.isdigit() or ch == "+")
+                st.link_button(f"📞 Call {g.get('full_name') or 'Guardian'}", f"tel:{clean_phone}")
     st.stop()
 
 # -------------------------------------------------------------
@@ -104,7 +136,7 @@ if app_mode == "🚀 Admin Dashboard":
     st.title("🔑 Administrative Control Panel (DEMO)")
     admin_tabs = st.tabs(["📋 Student Directory", "➕ Register New Record", "🔗 Assign NFC Tags", "📍 Live Scan Map"])
 
-    with admin_tabs:
+    with admin_tabs[0]:
         st.subheader("Student Database Manifest")
         try:
             students_res = supabase.table("students").select("*").execute().data
@@ -115,7 +147,7 @@ if app_mode == "🚀 Admin Dashboard":
         except Exception as e:
             st.error(f"Database read failure: {str(e)}")
 
-    with admin_tabs:
+    with admin_tabs[1]:
         st.subheader("Enroll New Student Identity")
         with st.form("new_student_form", clear_on_submit=True):
             s_id = st.text_input("School Registration ID (e.g. AUS-2026-001):")
@@ -142,7 +174,7 @@ if app_mode == "🚀 Admin Dashboard":
                             "bio": s_bio, "class_name": s_class, "allergies": s_allergies, "safety_notes": s_notes
                         }
                         inserted_student = supabase.table("students").insert(student_payload).execute()
-                        new_student_uuid = inserted_student.data["id"]
+                        new_student_uuid = inserted_student.data[0]["id"]
                         
                         guardian_payload = {
                             "student_id": new_student_uuid, "full_name": g_name,
@@ -153,7 +185,7 @@ if app_mode == "🚀 Admin Dashboard":
                     except Exception as e:
                         st.error(f"Failed to submit: {str(e)}")
 
-    with admin_tabs:
+    with admin_tabs[2]:
         st.subheader("Configure Physical NFC Tokens")
         try:
             students_list = supabase.table("students").select("id, full_name, student_id").execute().data
@@ -165,15 +197,15 @@ if app_mode == "🚀 Admin Dashboard":
                 if st.button("GENERATE NEW SECURE NFC TOKEN"):
                     try:
                         tag_res = supabase.table("nfc_tags").insert({"student_id": selected_uuid}).execute()
-                        hex_token = tag_res.data["public_token"]
-                        final_nfc_link = f"https://streamlit.app{hex_token}"
+                        hex_token = tag_res.data[0]["public_token"]
+                        final_nfc_link = build_app_url("tag_token", hex_token)
                         st.success("🔒 Secure Security Hex Key Generated Successfully!")
                         st.code(final_nfc_link)
                     except Exception as e:
                         existing_tag = supabase.table("nfc_tags").select("public_token").eq("student_id", selected_uuid).execute()
                         if existing_tag.data:
-                            hex_token = existing_tag.data["public_token"]
-                            fixed_link = f"https://streamlit.app{hex_token}"
+                            hex_token = existing_tag.data[0]["public_token"]
+                            fixed_link = build_app_url("tag_token", hex_token)
                             st.warning("🔄 Token already initialized. Existing link:")
                             st.code(fixed_link)
             else:
@@ -181,12 +213,14 @@ if app_mode == "🚀 Admin Dashboard":
         except Exception as e:
             st.error(f"Failed to query records: {str(e)}")
 
-    with admin_tabs:
+    with admin_tabs[3]:
         st.subheader("📍 Live Location Tracking Logs")
         try:
             logs_res = supabase.table("scan_logs").select("latitude, longitude").execute().data
             if logs_res:
-                df_map = pd.DataFrame(logs_res).dropna()
+                df_map = pd.DataFrame(logs_res).dropna().rename(
+                    columns={"latitude": "lat", "longitude": "lon"}
+                )
                 if not df_map.empty:
                     st.map(df_map)
                 else:
@@ -196,4 +230,4 @@ if app_mode == "🚀 Admin Dashboard":
                 st.caption("Showing demo coordinate simulation area for Hargeisa, Somalia:")
                 st.map(hargeisa_demo)
         except Exception as e:
-    st.error(f"Failed to load location logs: {e}")
+            st.error(f"Failed to load location logs: {e}")
