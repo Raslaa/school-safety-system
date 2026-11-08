@@ -93,6 +93,9 @@ def init_supabase() -> Client:
         raise RuntimeError(
             "Set Supabase url and a server-side secret/service-role key in Streamlit secrets "
             "or environment variables. Do not use the publishable/anon key for this app."
+            "Supabase server key is missing. In Streamlit Secrets, set [supabase].secret_key "
+            "to the Supabase Secret key, or [supabase].service_role_key to the legacy service_role key. "
+            "The generic 'key' setting and publishable/anon keys are not accepted."
         )
     return create_client(url, key)
 
